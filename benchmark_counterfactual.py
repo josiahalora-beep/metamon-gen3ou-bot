@@ -1,8 +1,8 @@
 """Offline counterfactual benchmark for SyntheticRLV2 vs its tactical verifier.
 
-This never connects to Showdown.  Recorded SQLite turns provide the actual
+This never connects to Showdown. Recorded SQLite turns provide the actual
 SyntheticRLV2 action (A); the current verifier is evaluated on the reconstructed
-same state (B).  Deterministic fixture positions test hard facts separately.
+same state (B). Deterministic fixture positions test hard facts separately.
 """
 from __future__ import annotations
 
@@ -41,7 +41,8 @@ def battle_from_snapshot(snapshot: dict):
     active = _pokemon(snapshot.get("our_active", {})); active.active = True
     target = _pokemon(snapshot.get("opponent_active", {})); target.active = True
     our_team = [_pokemon(p) for p in snapshot.get("our_team", [])]
-    if not our_team or all(p.name != active.name for p in our_team): our_team.insert(0, active)
+    if not our_team or all(p.name != active.name for p in our_team):
+        our_team.insert(0, active)
     opponent_team = [_pokemon(p) for p in snapshot.get("opponent_team", [])]
     legal_moves = list(active.moves.values())
     switches = [p for p in our_team if p.name != active.name and not p.fainted]
@@ -89,6 +90,21 @@ def hard_fact_for_action(battle, action: int) -> dict:
             "damage": result.__dict__, "incoming_ko_risk": None}
 
 
+def _override_classification(model_action: int, final_action: int, model_legal: bool,
+                             final_hard_facts: list[str] | None, evaluations: list[dict]) -> str:
+    if model_action == final_action:
+        return "none"
+    if not model_legal:
+        return "illegal_model_action"
+    if final_hard_facts:
+        return "hard_fact"
+    final_eval = next((e for e in evaluations if int(e.get("action", -1)) == final_action), None)
+    reason = str(final_eval.get("reason", "")) if final_eval else ""
+    if "anti-throw:" in reason or "setup emergency:" in reason:
+        return "strategic_safety"
+    return "unjustified_heuristic"
+
+
 def run_recorded(database: Path, limit: int) -> list[dict]:
     db = sqlite3.connect(database)
     try:
@@ -103,13 +119,20 @@ def run_recorded(database: Path, limit: int) -> list[dict]:
             except (TypeError, ValueError, json.JSONDecodeError, KeyError):
                 legal = list(range(4)) + [4 + i for i in range(max(0, len(battle.available_switches)))]
             final, evaluations = evaluator.evaluate(battle, legal, int(model_action))
+            eval_rows = [e.__dict__ for e in evaluations]
             model_fact = hard_fact_for_action(battle, int(model_action))
             final_fact = hard_fact_for_action(battle, int(final))
+            model_legal = int(model_action) in legal
+            classification = _override_classification(
+                int(model_action), int(final), model_legal,
+                final_fact.get("hard", []), eval_rows,
+            )
             results.append({
                 "source": "recorded", "battle_id": battle_id, "turn": turn,
                 "model_action": int(model_action), "final_action": int(final),
                 "override": int(model_action) != int(final),
-                "model_legal": int(model_action) in legal, "final_legal": int(final) in legal,
+                "override_classification": classification,
+                "model_legal": model_legal, "final_legal": int(final) in legal,
                 "legal_actions": legal,
                 "model_score": None,
                 "position_evaluation": None,
@@ -117,7 +140,7 @@ def run_recorded(database: Path, limit: int) -> list[dict]:
                 "final_damage": final_fact.get("damage"),
                 "incoming_ko_risk": final_fact.get("incoming_ko_risk"),
                 "model_hard_facts": model_fact.get("hard", []), "final_hard_facts": final_fact.get("hard", []),
-                "evaluations": [e.__dict__ for e in evaluations],
+                "evaluations": eval_rows,
                 "tactical_confidence": "high" if final_fact.get("hard") else "unknown",
             })
         return results
@@ -178,24 +201,27 @@ def run_fixtures() -> list[dict]:
 
 
 def report(recorded, fixtures):
-    all_rows = recorded + fixtures
     overrides = [r for r in recorded if r["override"]]
     justified = [r for r in overrides if r.get("final_hard_facts") or not r.get("model_legal", True)]
     reasons = {}
     for row in overrides:
-        if not row.get("model_legal", True):
-            reason = "illegal_model_action"
-        elif row.get("final_hard_facts"):
-            reason = "+".join(row["final_hard_facts"])
-        else:
-            reason = "no_hard_fact"
+        reason = row.get("override_classification", "unclassified")
         reasons[reason] = reasons.get(reason, 0) + 1
+    strategic = sum(r.get("override_classification") == "strategic_safety" for r in recorded)
+    hard = sum(r.get("override_classification") == "hard_fact" for r in recorded)
+    unjustified = sum(r.get("override_classification") == "unjustified_heuristic" for r in recorded)
+    illegal = sum(r.get("override_classification") == "illegal_model_action" for r in recorded)
     return {
         "recorded_states": len(recorded), "fixture_states": len(fixtures),
         "preserved_percentage": (100 * (len(recorded) - len(overrides)) / len(recorded)) if recorded else None,
         "overridden_percentage": (100 * len(overrides) / len(recorded)) if recorded else None,
-        "override_count": len(overrides), "hard_fact_justified_overrides": len(justified),
+        "override_count": len(overrides),
+        "hard_fact_justified_overrides": len(justified),
         "hard_fact_justification_percentage": (100 * len(justified) / len(overrides)) if overrides else None,
+        "strategic_safety_overrides": strategic,
+        "hard_fact_overrides": hard,
+        "unjustified_heuristic_overrides": unjustified,
+        "illegal_model_overrides": illegal,
         "override_reasons": reasons,
         "model_illegal_rate": 100 * sum(not r["model_legal"] for r in recorded) / len(recorded) if recorded else None,
         "verifier_illegal_rate": 100 * sum(not r["final_legal"] for r in recorded) / len(recorded) if recorded else None,
@@ -203,7 +229,7 @@ def report(recorded, fixtures):
         "guaranteed_ko_recognition": sum("guaranteed_ko" in r.get("hard_facts", []) or "guaranteed_ko" in r.get("final_hard_facts", []) for r in fixtures),
         "guaranteed_2hko_recognition": sum("guaranteed_2hko" in r.get("hard_facts", []) or "guaranteed_2hko" in r.get("final_hard_facts", []) for r in fixtures),
         "guaranteed_loss_avoidance": "not implemented: incoming KO evaluator is intentionally unavailable",
-        "rows": all_rows,
+        "rows": recorded + fixtures,
     }
 
 
@@ -219,7 +245,7 @@ def main():
     result = report(recorded, fixtures)
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output).write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
-    lines = ["SyntheticRLV2 counterfactual benchmark", "", f"Recorded states: {result['recorded_states']}", f"Fixture states: {result['fixture_states']}", f"Actions preserved: {result['preserved_percentage']}", f"Actions overridden: {result['overridden_percentage']}", f"Hard-fact justified overrides: {result['hard_fact_justification_percentage']}", f"Override reasons: {result['override_reasons']}", f"Model illegal rate: {result['model_illegal_rate']}", f"Verifier illegal rate: {result['verifier_illegal_rate']}", f"Hard-fact-only obvious-blunder rate: {result['obvious_blunder_rate_hard_facts_only']}", f"Guaranteed-KO fixture recognition: {result['guaranteed_ko_recognition']}", f"Guaranteed-2HKO fixture recognition: {result['guaranteed_2hko_recognition']}", f"Guaranteed-loss avoidance: {result['guaranteed_loss_avoidance']}"]
+    lines = ["SyntheticRLV2 counterfactual benchmark", "", f"Recorded states: {result['recorded_states']}", f"Fixture states: {result['fixture_states']}", f"Actions preserved: {result['preserved_percentage']}", f"Actions overridden: {result['overridden_percentage']}", f"Hard-fact justified overrides: {result['hard_fact_justification_percentage']}", f"Strategic safety overrides: {result['strategic_safety_overrides']}", f"Hard-fact overrides: {result['hard_fact_overrides']}", f"Unjustified heuristic overrides: {result['unjustified_heuristic_overrides']}", f"Override reasons: {result['override_reasons']}", f"Model illegal rate: {result['model_illegal_rate']}", f"Verifier illegal rate: {result['verifier_illegal_rate']}", f"Hard-fact-only obvious-blunder rate: {result['obvious_blunder_rate_hard_facts_only']}", f"Guaranteed-KO fixture recognition: {result['guaranteed_ko_recognition']}", f"Guaranteed-2HKO fixture recognition: {result['guaranteed_2hko_recognition']}", f"Guaranteed-loss avoidance: {result['guaranteed_loss_avoidance']}"]
     Path(args.text_output).write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
 
