@@ -62,6 +62,56 @@ def _current_hp_range(obj: Any, hp_known: int) -> tuple[int, int] | None:
     return (hp_known, hp_known) if hp_known > 0 else None
 
 
+def _ivs(obj: Any) -> dict[str, int] | None:
+    raw = getattr(obj, "ivs", None)
+    if not isinstance(raw, dict):
+        return None
+    required = ("hp", "atk", "def", "spa", "spd", "spe")
+    values: dict[str, int] = {}
+    for key in required:
+        try:
+            value = raw.get(key)
+            if value is None:
+                return None
+            values[key] = max(0, min(31, int(value)))
+        except (TypeError, ValueError):
+            return None
+    return values
+
+
+def _hidden_power_metadata(attacker: Any, move: Any) -> tuple[str | None, int | None, bool]:
+    """Return the exact Gen 3 Hidden Power type/power when all IVs are known."""
+    move_id = str(getattr(move, "id", getattr(move, "name", ""))).lower().replace(" ", "")
+    if not move_id.startswith("hiddenpower"):
+        return None, None, True
+    ivs = _ivs(attacker)
+    if ivs is None:
+        return None, None, False
+
+    # Gen 3 Hidden Power type and power use the low bits / full IV values.
+    parity = (
+        (ivs["hp"] & 1)
+        + 2 * (ivs["atk"] & 1)
+        + 4 * (ivs["def"] & 1)
+        + 8 * (ivs["spe"] & 1)
+        + 16 * (ivs["spa"] & 1)
+        + 32 * (ivs["spd"] & 1)
+    )
+    type_index = math.floor(parity * 15 / 63)
+    hp_types = ["fighting", "flying", "poison", "ground", "rock", "bug", "ghost", "steel",
+                "fire", "water", "grass", "electric", "psychic", "ice", "dragon", "dark"]
+    iv_sum = (
+        (ivs["hp"] % 4)
+        + 4 * (ivs["atk"] % 4)
+        + 16 * (ivs["def"] % 4)
+        + 64 * (ivs["spe"] % 4)
+        + 256 * (ivs["spa"] % 4)
+        + 1024 * (ivs["spd"] % 4)
+    )
+    power = math.floor(iv_sum * 40 / 63) + 30
+    return hp_types[type_index], power, True
+
+
 def calculate_damage(attacker: Any, defender: Any, move: Any, *, weather: str = "",
                       critical: bool = False, reflect: bool = False,
                       light_screen: bool = False, random_rolls: int = 16) -> DamageRange:
@@ -71,11 +121,26 @@ def calculate_damage(attacker: Any, defender: Any, move: Any, *, weather: str = 
     revealed a stat, the calculator uses a legal ADV stat envelope derived from
     species base stats, level, and observed HP fraction. It never substitutes
     fake stats such as 1, and it labels the result as estimated.
+
+    Hidden Power is special in Gen 3: when all six IVs are available, its type
+    and power are reconstructed from the IVs. For an opponent whose IVs are
+    hidden, the move is deliberately treated as unreliable so tactical logic
+    cannot turn an unknown Hidden Power into a false KO or safety fact.
     """
     power = int(getattr(move, "base_power", 0) or 0)
+    move_type = str(getattr(getattr(move, "type", ""), "name", getattr(move, "type", ""))).lower()
+    hp_type, hp_power, hp_known = _hidden_power_metadata(attacker, move)
+    is_hidden_power = str(getattr(move, "id", getattr(move, "name", ""))).lower().replace(" ", "").startswith("hiddenpower")
+    if is_hidden_power and hp_known:
+        if hp_power is None or hp_type is None:
+            return DamageRange(0, 0, 0.0, 0.0, 0.0, reliable=False, reason="missing Hidden Power IV metadata")
+        move_type = hp_type
+        power = hp_power
+    elif is_hidden_power and not hp_known:
+        return DamageRange(0, 0, 0.0, 0.0, 0.0, reliable=False, reason="Hidden Power IVs are hidden")
+
     if power <= 0:
         return DamageRange(0, 0, 0.0, 0.0, 0.0)
-    move_type = str(getattr(getattr(move, "type", ""), "name", getattr(move, "type", ""))).lower()
     physical_types = {"normal", "fighting", "flying", "poison", "ground", "rock", "bug", "ghost", "steel"}
     physical = move_type in physical_types
     atk_key, def_key = ("atk", "def") if physical else ("spa", "spd")
@@ -85,20 +150,17 @@ def calculate_damage(attacker: Any, defender: Any, move: Any, *, weather: str = 
     if atk_range is None or def_range is None:
         return DamageRange(0, 0, 0.0, 0.0, 0.0, reliable=False, reason="missing battle stats and species base stats")
 
-    hp_known = getattr(defender, "max_hp", None)
+    hp_known_value = getattr(defender, "max_hp", None)
     try:
-        hp_known = int(hp_known) if hp_known is not None else 0
+        hp_known_value = int(hp_known_value) if hp_known_value is not None else 0
     except (TypeError, ValueError):
-        hp_known = 0
+        hp_known_value = 0
     hp_estimate = hp_range_from_observation(defender)
-    placeholder_hp = hp_known == 100 and hp_estimate is not None
+    placeholder_hp = hp_known_value == 100 and hp_estimate is not None
     if placeholder_hp:
-        # Poke-env's public Gen 3 path may expose 100 as a placeholder max HP.
-        # The estimator converts the observed HP fraction into a conservative
-        # current-HP envelope.
         hp_range = hp_estimate
     else:
-        hp_range = _current_hp_range(defender, hp_known)
+        hp_range = _current_hp_range(defender, hp_known_value)
         if hp_range is None:
             return DamageRange(0, 0, 0.0, 0.0, 0.0, reliable=False, reason="missing battle HP")
 
@@ -156,7 +218,7 @@ def calculate_damage(attacker: Any, defender: Any, move: Any, *, weather: str = 
         ko_probability = 1.0 if min_damage >= hp_hi else 0.0
     else:
         ko_probability = sum(v >= hp_lo for v in values) / len(values)
-    pct_min = 100.0 * min_damage / max(1, hp_known or hp_hi)
-    pct_max = 100.0 * max_damage / max(1, hp_known or hp_lo)
+    pct_min = 100.0 * min_damage / max(1, hp_known_value or hp_hi)
+    pct_max = 100.0 * max_damage / max(1, hp_known_value or hp_lo)
     reason = "estimated from species/base stats and observed HP" if estimated else ""
     return DamageRange(min_damage, max_damage, pct_min, pct_max, ko_probability, reliable=True, reason=reason)
