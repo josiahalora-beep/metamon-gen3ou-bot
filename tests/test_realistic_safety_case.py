@@ -82,8 +82,8 @@ class ObservedSafetyCaseTests(unittest.TestCase):
 
         self.assertEqual(decision.action, 4)
         self.assertTrue(decision.hard)
-        self.assertIn("compromised", decision.reason)
-        self.assertIn("safer switch", decision.reason)
+        self.assertIn("compromised active", decision.reason)
+        self.assertIn("safer", decision.reason)
 
 
 if __name__ == "__main__":
