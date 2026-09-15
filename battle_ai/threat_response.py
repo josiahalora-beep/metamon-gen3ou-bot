@@ -4,56 +4,36 @@ from typing import Any
 
 from metamon.interface import consistent_pokemon_order
 
+from .smogon_priors import expected_stats, infer_profile, likely_moves
 
-# Gen 3 type chart compressed into only the relationships that matter for a
-# conservative defensive switch. Unlisted pairs are neutral (1.0).
+
+# Gen 3 type chart compressed for defensive-switch reasoning.
 _SUPER_EFFECTIVE: dict[str, set[str]] = {
-    "normal": set(),
-    "fire": {"grass", "ice", "bug", "steel"},
-    "water": {"fire", "ground", "rock"},
-    "electric": {"water", "flying"},
-    "grass": {"water", "ground", "rock"},
-    "ice": {"grass", "ground", "flying", "dragon"},
-    "fighting": {"normal", "ice", "rock", "dark", "steel"},
-    "poison": {"grass"},
+    "normal": set(), "fire": {"grass", "ice", "bug", "steel"},
+    "water": {"fire", "ground", "rock"}, "electric": {"water", "flying"},
+    "grass": {"water", "ground", "rock"}, "ice": {"grass", "ground", "flying", "dragon"},
+    "fighting": {"normal", "ice", "rock", "dark", "steel"}, "poison": {"grass"},
     "ground": {"fire", "electric", "poison", "rock", "steel"},
-    "flying": {"grass", "fighting", "bug"},
-    "psychic": {"fighting", "poison"},
-    "bug": {"grass", "psychic", "dark"},
-    "rock": {"fire", "ice", "flying", "bug"},
-    "ghost": {"ghost", "psychic"},
-    "dragon": {"dragon"},
-    "dark": {"psychic", "ghost"},
+    "flying": {"grass", "fighting", "bug"}, "psychic": {"fighting", "poison"},
+    "bug": {"grass", "psychic", "dark"}, "rock": {"fire", "ice", "flying", "bug"},
+    "ghost": {"ghost", "psychic"}, "dragon": {"dragon"}, "dark": {"psychic", "ghost"},
     "steel": {"ice", "rock"},
 }
 _RESISTED: dict[str, set[str]] = {
-    "normal": {"rock", "steel"},
-    "fire": {"fire", "water", "rock", "dragon"},
-    "water": {"water", "grass", "dragon"},
-    "electric": {"electric", "grass", "dragon"},
+    "normal": {"rock", "steel"}, "fire": {"fire", "water", "rock", "dragon"},
+    "water": {"water", "grass", "dragon"}, "electric": {"electric", "grass", "dragon"},
     "grass": {"fire", "grass", "poison", "flying", "bug", "dragon", "steel"},
-    "ice": {"fire", "water", "ice", "steel"},
-    "fighting": {"poison", "flying", "psychic", "bug"},
-    "poison": {"poison", "ground", "rock", "ghost"},
-    "ground": {"grass", "bug"},
-    "flying": {"electric", "rock", "steel"},
-    "psychic": {"steel", "psychic"},
+    "ice": {"fire", "water", "ice", "steel"}, "fighting": {"poison", "flying", "psychic", "bug"},
+    "poison": {"poison", "ground", "rock", "ghost"}, "ground": {"grass", "bug"},
+    "flying": {"electric", "rock", "steel"}, "psychic": {"steel", "psychic"},
     "bug": {"fire", "fighting", "poison", "flying", "ghost", "steel"},
-    "rock": {"fighting", "ground", "steel"},
-    "ghost": {"dark"},
-    "dragon": {"steel"},
-    "dark": {"fighting", "dark", "steel"},
-    "steel": {"fire", "water", "electric", "steel"},
+    "rock": {"fighting", "ground", "steel"}, "ghost": {"dark"}, "dragon": {"steel"},
+    "dark": {"fighting", "dark", "steel"}, "steel": {"fire", "water", "electric", "steel"},
 }
 _IMMUNE: dict[str, set[str]] = {
-    "normal": {"ghost"},
-    "fighting": {"ghost"},
-    "electric": {"ground"},
-    "poison": {"steel"},
-    "ground": {"flying"},
-    "psychic": {"dark"},
-    "ghost": {"normal"},
-    "dragon": set(),
+    "normal": {"ghost"}, "fighting": {"ghost"}, "electric": {"ground"},
+    "poison": {"steel"}, "ground": {"flying"}, "psychic": {"dark"},
+    "ghost": {"normal"}, "dragon": set(),
 }
 
 
@@ -74,7 +54,6 @@ def _base_stats(pokemon: Any) -> dict[str, int]:
 
 
 def _stat(pokemon: Any, stat: str) -> float:
-    """Use observed battle stats when available, otherwise exact Gen 3 base stats."""
     stats = getattr(pokemon, "stats", {}) or {}
     try:
         value = stats.get(stat) if isinstance(stats, dict) else getattr(stats, stat, None)
@@ -85,18 +64,25 @@ def _stat(pokemon: Any, stat: str) -> float:
     return float(_base_stats(pokemon).get(stat, 0))
 
 
+def _profile_stat(pokemon: Any, stat: str) -> float:
+    profile = infer_profile(pokemon)
+    if profile is not None:
+        stats = expected_stats(pokemon, profile)
+        if stat in stats:
+            return float(stats[stat])
+    return _stat(pokemon, stat)
+
+
 def _boosted_stat(pokemon: Any, stat: str) -> float:
-    value = _stat(pokemon, stat)
+    value = _profile_stat(pokemon, stat)
     boosts = getattr(pokemon, "boosts", {}) or {}
     try:
         boost = int(boosts.get(stat, 0) or 0)
     except (TypeError, ValueError):
         boost = 0
     if boost >= 0:
-        multiplier = (2.0 + boost) / 2.0
-    else:
-        multiplier = 2.0 / (2.0 - boost)
-    return value * multiplier
+        return value * ((2.0 + boost) / 2.0)
+    return value * (2.0 / (2.0 - boost))
 
 
 def _type_multiplier(attack_type: str, defender: Any) -> float:
@@ -128,17 +114,49 @@ def _passive(move: Any) -> bool:
     return int(getattr(move, "base_power", 0) or 0) <= 0
 
 
+def _revealed_moves(pokemon: Any) -> tuple[str, ...]:
+    return tuple(
+        _key(getattr(move, "id", getattr(move, "name", "")))
+        for move in (getattr(pokemon, "moves", {}) or {}).values()
+    )
+
+
+def _profile_threat(pokemon: Any) -> tuple[bool, bool, str, str]:
+    """Return special/physical threat flags using the inferred competitive set prior."""
+    profile = infer_profile(pokemon)
+    if profile is None:
+        atk = _boosted_stat(pokemon, "atk")
+        spa = _boosted_stat(pokemon, "spa")
+        special = spa >= atk and spa >= 90
+        physical = atk > spa and atk >= 100
+        return special, physical, "species/base stats", ""
+
+    moves = set(profile.moves)
+    special_names = {"surf", "hydropump", "thunderbolt", "thunder", "icebeam", "psychic", "fireblast", "flamethrower", "hiddenpower", "gigadrain"}
+    physical_names = {"earthquake", "rockslide", "rockslide", "bodyslam", "return", "doubleedge", "focuspunch", "brickbreak", "hiddenpowerghost", "explosion", "meteormash", "sludgebomb", "megahorn", "drillpeck", "extremespeed"}
+    special_score = sum(1 for move in moves if move in special_names) + (2 if "spa" in profile.evs else 0)
+    physical_score = sum(1 for move in moves if move in physical_names) + (2 if "atk" in profile.evs else 0)
+    spa = _boosted_stat(pokemon, "spa")
+    atk = _boosted_stat(pokemon, "atk")
+    return (
+        special_score >= physical_score,
+        physical_score > special_score,
+        profile.name,
+        ",".join(profile.evidence),
+    )
+
+
 def hidden_threat_switch_override(
     battle: Any,
     legal_actions: list[int],
     model_action: int,
     move_map: dict[int, Any],
 ) -> tuple[int | None, str]:
-    """Use known Gen 3 species typing/base stats without fabricating hidden moves.
+    """Use exact Gen 3 species data plus a Smogon ADV OU set posterior.
 
-    This deliberately requires several signals before overriding the model:
-    a passive selected move, a faster high-offense opposing active, and a teammate
-    with materially better defensive bulk or typing.
+    Unrevealed moves are probabilities, not facts. A revealed move sharply raises
+    compatible Smogon sets, while 31-IV competitive stat reconstruction supplies
+    a concrete expected speed/offense profile for the candidate set.
     """
     if not (0 <= int(model_action) < 4):
         return None, ""
@@ -151,23 +169,20 @@ def hidden_threat_switch_override(
     if active is None or opponent is None or getattr(opponent, "fainted", False):
         return None, ""
 
+    special_threat, physical_threat, profile_name, evidence = _profile_threat(opponent)
     active_speed = _boosted_stat(active, "spe")
     opponent_speed = _boosted_stat(opponent, "spe")
-    opponent_atk = _boosted_stat(opponent, "atk")
-    opponent_spa = _boosted_stat(opponent, "spa")
-    special_threat = opponent_spa >= opponent_atk and opponent_spa >= 90
-    physical_threat = opponent_atk > opponent_spa and opponent_atk >= 100
-    speed_threat = opponent_speed >= active_speed * 1.10
+    speed_threat = opponent_speed >= active_speed * 1.05
     if not (special_threat or physical_threat) or not speed_threat:
         return None, ""
 
     use_special = special_threat and not physical_threat
-    active_bulk_stat = "spd" if use_special else "def"
-    active_bulk = _stat(active, "hp") + _boosted_stat(active, active_bulk_stat)
+    bulk_stat = "spd" if use_special else "def"
+    active_bulk = _profile_stat(active, "hp") + _boosted_stat(active, bulk_stat)
 
-    opponent_type_pressure = _types(opponent)
+    opponent_types = _types(opponent)
     active_matchup = 1.0
-    for attack_type in opponent_type_pressure:
+    for attack_type in opponent_types:
         active_matchup = max(active_matchup, _type_multiplier(attack_type, active))
     if active_matchup < 1.0:
         return None, ""
@@ -181,37 +196,37 @@ def hidden_threat_switch_override(
         if not (0 <= idx < len(slots)):
             continue
         candidate = slots[idx]
-        if _stat(candidate, "hp") <= 0 or float(getattr(candidate, "current_hp_fraction", 0.0) or 0.0) < 0.50:
+        if _profile_stat(candidate, "hp") <= 0 or float(getattr(candidate, "current_hp_fraction", 0.0) or 0.0) < 0.50:
             continue
 
         matchup = 1.0
-        for attack_type in opponent_type_pressure:
+        for attack_type in opponent_types:
             matchup = min(matchup, _type_multiplier(attack_type, candidate))
-        bulk = _stat(candidate, "hp") + _boosted_stat(candidate, active_bulk_stat)
+        bulk = _profile_stat(candidate, "hp") + _boosted_stat(candidate, bulk_stat)
         bulk_gain = bulk - active_bulk
         matchup_gain = active_matchup - matchup
-
-        score = matchup_gain * 40.0 + max(0.0, bulk_gain) / 5.0
-        if use_special and bulk_gain > 35:
-            score += 8.0
+        score = matchup_gain * 45.0 + max(0.0, bulk_gain) / 5.0
+        if use_special and bulk_gain > 25:
+            score += 10.0
         if matchup <= 0.5:
-            score += 12.0
+            score += 14.0
         if matchup == 0.0:
-            score += 20.0
-
+            score += 25.0
         if best is None or score > best[0]:
             best = (score, int(action), candidate, matchup, bulk_gain)
 
-    # A lower threshold catches clear special-sponge upgrades such as
-    # Celebi -> Blissey against a faster Starmie using only exact species
-    # typing/base-stat evidence; hidden EVs and moves are still not invented.
-    if best is None or best[0] < 14.0:
+    if best is None or best[0] < 12.0:
         return None, ""
 
-    score, action, candidate, matchup, bulk_gain = best
+    _, action, candidate, matchup, bulk_gain = best
+    likely = ",".join(likely_moves(opponent, limit=6))
     threat_kind = "special" if use_special else "physical"
+    evidence_text = f"; set evidence={evidence}" if evidence else ""
     return action, (
-        f"hidden-threat response: opponent has a faster high-{threat_kind}-offense profile "
-        f"while the model selected {_key(selected)}; switch to {_key(candidate)} "
-        f"(defensive matchup x{matchup:.1f}, bulk gain {bulk_gain:.0f}) before spending another passive turn"
+        f"hidden-threat response: {profile_name or 'species/base-stat prior'}; "
+        f"revealed={','.join(_revealed_moves(opponent)) or 'none'}; "
+        f"likely={likely or 'no cached set data'}; "
+        f"faster high-{threat_kind}-offense profile; switch to {_key(candidate)} "
+        f"(matchup x{matchup:.1f}, bulk gain {bulk_gain:.0f}, 31-IV Smogon-stat prior)"
+        f"{evidence_text}"
     )
