@@ -5,37 +5,14 @@ import json
 import sqlite3
 from collections import Counter
 from pathlib import Path
-from types import SimpleNamespace as NS
 
 from battle_ai.evaluator import TacticalEvaluator
 from benchmark_counterfactual import battle_from_snapshot
 from counterfactual_gen3 import _legal_actions
 
 
-def _hp_fraction(pokemon):
-    try:
-        return float(getattr(pokemon, "current_hp_fraction", 0.0) or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _status(pokemon):
-    value = getattr(pokemon, "status", "")
-    return str(getattr(value, "name", value) or value).lower()
-
-
-def _species(pokemon):
-    if pokemon is None:
-        return ""
-    return str(getattr(pokemon, "species", getattr(pokemon, "name", "")) or "").lower()
-
-
-def _switch_target_name(battle, action):
-    if action < 4:
-        return ""
-    slots = list(getattr(battle, "available_switches", []) or [])
-    idx = action - 4
-    return str(getattr(slots[idx], "species", getattr(slots[idx], "name", ""))) if 0 <= idx < len(slots) else ""
+def _canonical_name(value):
+    return str(value or "").lower().replace("-", "").replace("_", "").replace(" ", "")
 
 
 def _actual_transition(before, after):
@@ -49,8 +26,8 @@ def _actual_transition(before, after):
     opp_before_name = str(opp_before.get("name", "")).lower()
     opp_after_name = str(opp_after.get("name", "")).lower()
 
-    our_switched = bool(our_before_name and our_after_name and our_before_name != our_after_name)
-    opponent_switched = bool(opp_before_name and opp_after_name and opp_before_name != opp_after_name)
+    our_switched = bool(our_before_name and our_after_name and _canonical_name(our_before_name) != _canonical_name(our_after_name))
+    opponent_switched = bool(opp_before_name and opp_after_name and _canonical_name(opp_before_name) != _canonical_name(opp_after_name))
 
     our_hp_before = float(our_before.get("hp_fraction", 0.0) or 0.0)
     our_hp_after = float(our_after.get("hp_fraction", 0.0) or 0.0)
@@ -65,14 +42,14 @@ def _actual_transition(before, after):
     opp_hp_loss = max(0.0, opp_hp_before - opp_hp_after) if not opponent_switched else 0.0
     our_fainted = bool(our_after.get("fainted", False))
     opp_fainted = bool(opp_after.get("fainted", False))
-    our_changed_without_switch = (our_status_before != our_status_after)
-    opp_changed_without_switch = (opp_status_before != opp_status_after)
+    our_status_changed = our_status_before != our_status_after
+    opp_status_changed = opp_status_before != opp_status_after
 
     if opponent_switched:
         opponent_response = "switch"
-    elif our_hp_loss > 0.0 or our_fainted or our_changed_without_switch:
+    elif our_hp_loss > 0.0 or our_fainted or our_status_changed:
         opponent_response = "non-switch_pressure"
-    elif opp_hp_loss > 0.0 or opp_fainted or opp_changed_without_switch:
+    elif opp_hp_loss > 0.0 or opp_fainted or opp_status_changed:
         opponent_response = "attack_or_effect_on_opponent"
     else:
         opponent_response = "unknown"
@@ -100,7 +77,17 @@ def _actual_transition(before, after):
     }
 
 
-def audit(database: Path, output: Path, limit: int = 0) -> dict:
+def _switch_target_name(battle, action):
+    if action < 4:
+        return ""
+    slots = list(getattr(battle, "available_switches", []) or [])
+    idx = action - 4
+    if 0 <= idx < len(slots):
+        return str(getattr(slots[idx], "species", getattr(slots[idx], "name", "")))
+    return ""
+
+
+def _decode_rows(database: Path, limit: int):
     db = sqlite3.connect(database)
     try:
         sql = "SELECT id,battle_id,turn,snapshot_json,candidate_actions_json,chosen_action FROM turns ORDER BY id"
@@ -108,12 +95,16 @@ def audit(database: Path, output: Path, limit: int = 0) -> dict:
         if limit > 0:
             sql += " LIMIT ?"
             params = (limit,)
-        rows = db.execute(sql, params).fetchall()
+        raw_rows = db.execute(sql, params).fetchall()
     finally:
         db.close()
 
-    decoded = []
-    for row_id, battle_id, turn, raw, raw_candidates, model_action in rows:
+    # A single logical battle turn can have multiple stored decision rows.
+    # Keep the latest row for each (battle_id, turn); earlier rows can reflect
+    # stale/recomputed decisions and corrupt next-turn alignment.
+    latest = {}
+    decode_errors = 0
+    for row_id, battle_id, turn, raw, raw_candidates, model_action in raw_rows:
         try:
             snapshot = json.loads(raw)
             battle = battle_from_snapshot(snapshot)
@@ -121,80 +112,118 @@ def audit(database: Path, output: Path, limit: int = 0) -> dict:
                 candidates = [int(x["action"]) for x in json.loads(raw_candidates or "[]")]
             except (TypeError, ValueError, json.JSONDecodeError, KeyError):
                 candidates = list(_legal_actions(battle))
-            decoded.append({
-                "id": int(row_id), "battle_id": str(battle_id), "turn": int(turn),
-                "snapshot": snapshot, "battle": battle, "legal": candidates,
+            key = (str(battle_id), int(turn))
+            latest[key] = {
+                "id": int(row_id),
+                "battle_id": str(battle_id),
+                "turn": int(turn),
+                "snapshot": snapshot,
+                "battle": battle,
+                "legal": candidates,
                 "model_action": int(model_action),
-            })
+            }
         except Exception:
-            continue
+            decode_errors += 1
+
+    rows = sorted(latest.values(), key=lambda r: r["id"])
+    return rows, decode_errors
+
+
+def audit(database: Path, output: Path, limit: int = 0) -> dict:
+    decoded, decode_errors = _decode_rows(database, limit)
 
     evaluator = TacticalEvaluator()
     records = []
-    errors = 0
-    for index, current in enumerate(decoded):
-        next_row = None
-        j = index + 1
-        while j < len(decoded) and decoded[j]["battle_id"] == current["battle_id"] and decoded[j]["turn"] <= current["turn"]:
-            j += 1
-        if j < len(decoded) and decoded[j]["battle_id"] == current["battle_id"] and decoded[j]["turn"] == current["turn"] + 1:
-            next_row = decoded[j]
-        if next_row is None:
-            continue
+    errors = decode_errors
+    duplicate_turn_count = 0
 
-        try:
-            legal = current["legal"] or list(_legal_actions(current["battle"]))
-            if current["model_action"] not in legal:
+    # Count duplicates independently so the report documents how much was
+    # collapsed before transition analysis.
+    db = sqlite3.connect(database)
+    try:
+        duplicate_rows = db.execute(
+            "SELECT battle_id, turn, COUNT(*) FROM turns GROUP BY battle_id, turn HAVING COUNT(*) > 1"
+        ).fetchall()
+        duplicate_turn_count = sum(int(row[2]) - 1 for row in duplicate_rows)
+    finally:
+        db.close()
+
+    by_battle = {}
+    for row in decoded:
+        by_battle.setdefault(row["battle_id"], []).append(row)
+
+    for battle_id, battle_rows in by_battle.items():
+        battle_rows.sort(key=lambda r: r["turn"])
+        for index, current in enumerate(battle_rows[:-1]):
+            next_row = battle_rows[index + 1]
+            if next_row["turn"] != current["turn"] + 1:
                 continue
-            final_action, evaluations = evaluator.evaluate(current["battle"], legal, current["model_action"])
-            if int(final_action) == int(current["model_action"]):
-                continue
 
-            chosen_eval = next((e for e in evaluations if int(e.action) == int(final_action)), None)
-            reason = chosen_eval.reason if chosen_eval else ""
-            transition = _actual_transition(current["snapshot"], next_row["snapshot"])
-            target = _switch_target_name(current["battle"], int(final_action))
-            if final_action >= 4:
-                expected_switch_executed = transition["our_switched"] and transition["our_active_after"].replace("-", "") == target.lower().replace("-", "")
-            else:
-                expected_switch_executed = None
+            try:
+                legal = current["legal"] or list(_legal_actions(current["battle"]))
+                model_action = current["model_action"]
+                if model_action not in legal:
+                    continue
 
-            records.append({
-                "battle_id": current["battle_id"],
-                "turn": current["turn"],
-                "model_action": int(current["model_action"]),
-                "final_action": int(final_action),
-                "source": reason.split(" |")[-1].strip() if reason else "unknown",
-                "reason": reason,
-                "final_kind": "switch" if final_action >= 4 else "move",
-                "switch_target": target,
-                "transition": transition,
-                "switch_execution_match": expected_switch_executed,
-            })
-        except Exception:
-            errors += 1
+                final_action, evaluations = evaluator.evaluate(current["battle"], legal, model_action)
+                if int(final_action) == model_action:
+                    continue
 
-    source_counts = Counter(r["final_kind"] for r in records)
+                chosen_eval = next((e for e in evaluations if int(e.action) == int(final_action)), None)
+                reason = chosen_eval.reason if chosen_eval else ""
+                transition = _actual_transition(current["snapshot"], next_row["snapshot"])
+                target = _switch_target_name(current["battle"], int(final_action))
+                switch_match = None
+                if final_action >= 4:
+                    switch_match = (
+                        transition["our_switched"]
+                        and _canonical_name(transition["our_active_after"]) == _canonical_name(target)
+                    )
+
+                records.append({
+                    "battle_id": battle_id,
+                    "turn": current["turn"],
+                    "model_action": model_action,
+                    "final_action": int(final_action),
+                    "source": reason.split(" |")[-1].strip() if reason else "unknown",
+                    "reason": reason,
+                    "final_kind": "switch" if final_action >= 4 else "move",
+                    "switch_target": target,
+                    "transition": transition,
+                    "switch_execution_match": switch_match,
+                })
+            except Exception:
+                errors += 1
+
+    override_kinds = Counter(r["final_kind"] for r in records)
     opponent_responses = Counter(r["transition"]["opponent_response"] for r in records)
     switch_overrides = [r for r in records if r["final_kind"] == "switch"]
     move_overrides = [r for r in records if r["final_kind"] == "move"]
     switch_matches = [r for r in switch_overrides if r["switch_execution_match"] is not None]
+    matched = [r for r in switch_matches if r["switch_execution_match"]]
+    pressure_after_switch = [
+        r for r in matched
+        if r["transition"]["opponent_response"] == "non-switch_pressure"
+    ]
+    survived_switch = [r for r in matched if not r["transition"]["our_fainted"]]
 
     payload = {
         "evaluated_real_transitions": len(records),
         "errors": errors,
-        "override_kinds": dict(source_counts),
+        "duplicate_rows_collapsed": duplicate_turn_count,
+        "override_kinds": dict(override_kinds),
         "actual_opponent_responses": dict(opponent_responses),
         "switch_overrides": len(switch_overrides),
-        "switch_execution_matches": sum(bool(r["switch_execution_match"]) for r in switch_matches),
-        "switch_execution_match_rate": (
-            sum(bool(r["switch_execution_match"]) for r in switch_matches) / len(switch_matches)
-            if switch_matches else None
-        ),
+        "switch_execution_matches": len(matched),
+        "switch_execution_failures": len(switch_matches) - len(matched),
+        "switch_execution_match_rate": (len(matched) / len(switch_matches)) if switch_matches else None,
+        "switches_followed_by_observed_pressure": len(pressure_after_switch),
+        "successful_switch_survival": len(survived_switch),
         "move_overrides": len(move_overrides),
         "negative_sounding_transition_cases": sum(
             1 for r in records
-            if r["transition"]["our_fainted"] or r["transition"]["opponent_response"] == "non-switch_pressure"
+            if r["transition"]["our_fainted"]
+            or r["transition"]["opponent_response"] == "non-switch_pressure"
         ),
         "rows": records,
     }
@@ -213,10 +242,13 @@ def main() -> None:
     print(json.dumps({
         "evaluated_real_transitions": payload["evaluated_real_transitions"],
         "errors": payload["errors"],
+        "duplicate_rows_collapsed": payload["duplicate_rows_collapsed"],
         "override_kinds": payload["override_kinds"],
         "actual_opponent_responses": payload["actual_opponent_responses"],
         "switch_overrides": payload["switch_overrides"],
         "switch_execution_match_rate": payload["switch_execution_match_rate"],
+        "switches_followed_by_observed_pressure": payload["switches_followed_by_observed_pressure"],
+        "successful_switch_survival": payload["successful_switch_survival"],
         "move_overrides": payload["move_overrides"],
         "negative_sounding_transition_cases": payload["negative_sounding_transition_cases"],
         "output": args.output,
