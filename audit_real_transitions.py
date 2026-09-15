@@ -6,7 +6,6 @@ import sqlite3
 from collections import Counter
 from pathlib import Path
 
-from battle_ai.evaluator import TacticalEvaluator
 from benchmark_counterfactual import battle_from_snapshot
 from counterfactual_gen3 import _legal_actions
 
@@ -26,8 +25,16 @@ def _actual_transition(before, after):
     opp_before_name = str(opp_before.get("name", "")).lower()
     opp_after_name = str(opp_after.get("name", "")).lower()
 
-    our_switched = bool(our_before_name and our_after_name and _canonical_name(our_before_name) != _canonical_name(our_after_name))
-    opponent_switched = bool(opp_before_name and opp_after_name and _canonical_name(opp_before_name) != _canonical_name(opp_after_name))
+    our_switched = bool(
+        our_before_name
+        and our_after_name
+        and _canonical_name(our_before_name) != _canonical_name(our_after_name)
+    )
+    opponent_switched = bool(
+        opp_before_name
+        and opp_after_name
+        and _canonical_name(opp_before_name) != _canonical_name(opp_after_name)
+    )
 
     our_hp_before = float(our_before.get("hp_fraction", 0.0) or 0.0)
     our_hp_after = float(our_after.get("hp_fraction", 0.0) or 0.0)
@@ -87,10 +94,40 @@ def _switch_target_name(battle, action):
     return ""
 
 
+def _find_recorded_reason(raw_candidates, final_action):
+    try:
+        candidates = json.loads(raw_candidates or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return "", ""
+    for item in candidates:
+        try:
+            if int(item.get("action")) == int(final_action):
+                return str(item.get("reason", "") or ""), str(item.get("kind", "") or "")
+        except (TypeError, ValueError):
+            continue
+    return "", ""
+
+
+def _source_from_reason(reason):
+    text = str(reason or "").lower()
+    if "hard-loss" in text or "safety" in text:
+        return "safety"
+    if "hazard plan" in text or "strategic" in text or "win condition" in text:
+        return "strategic"
+    if "response" in text or "prediction" in text or "switch probability" in text:
+        return "response_search"
+    if "threat" in text:
+        return "threat_response"
+    return "unknown"
+
+
 def _decode_rows(database: Path, limit: int):
     db = sqlite3.connect(database)
     try:
-        sql = "SELECT id,battle_id,turn,snapshot_json,candidate_actions_json,chosen_action FROM turns ORDER BY id"
+        sql = (
+            "SELECT id,battle_id,turn,snapshot_json,candidate_actions_json,"
+            "chosen_action,final_action,reasoning_json FROM turns ORDER BY id"
+        )
         params = ()
         if limit > 0:
             sql += " LIMIT ?"
@@ -99,12 +136,12 @@ def _decode_rows(database: Path, limit: int):
     finally:
         db.close()
 
-    # A single logical battle turn can have multiple stored decision rows.
-    # Keep the latest row for each (battle_id, turn); earlier rows can reflect
-    # stale/recomputed decisions and corrupt next-turn alignment.
+    # A logical battle turn can have multiple stored decision rows. Keep the
+    # latest row for each (battle_id, turn) so the transition compares the last
+    # decision state for that logical turn to the next logical turn.
     latest = {}
     decode_errors = 0
-    for row_id, battle_id, turn, raw, raw_candidates, model_action in raw_rows:
+    for row_id, battle_id, turn, raw, raw_candidates, chosen_action, final_action, reasoning_json in raw_rows:
         try:
             snapshot = json.loads(raw)
             battle = battle_from_snapshot(snapshot)
@@ -120,25 +157,25 @@ def _decode_rows(database: Path, limit: int):
                 "snapshot": snapshot,
                 "battle": battle,
                 "legal": candidates,
-                "model_action": int(model_action),
+                "model_action": int(chosen_action),
+                "final_action": int(final_action) if final_action is not None else int(chosen_action),
+                "reasoning_json": reasoning_json or "{}",
+                "candidate_actions_json": raw_candidates or "[]",
             }
         except Exception:
             decode_errors += 1
 
-    rows = sorted(latest.values(), key=lambda r: r["id"])
+    rows = sorted(latest.values(), key=lambda r: (r["battle_id"], r["turn"], r["id"]))
     return rows, decode_errors
 
 
 def audit(database: Path, output: Path, limit: int = 0) -> dict:
     decoded, decode_errors = _decode_rows(database, limit)
 
-    evaluator = TacticalEvaluator()
     records = []
     errors = decode_errors
     duplicate_turn_count = 0
 
-    # Count duplicates independently so the report documents how much was
-    # collapsed before transition analysis.
     db = sqlite3.connect(database)
     try:
         duplicate_rows = db.execute(
@@ -160,19 +197,23 @@ def audit(database: Path, output: Path, limit: int = 0) -> dict:
                 continue
 
             try:
-                legal = current["legal"] or list(_legal_actions(current["battle"]))
                 model_action = current["model_action"]
-                if model_action not in legal:
+                final_action = current["final_action"]
+                if final_action == model_action:
                     continue
 
-                final_action, evaluations = evaluator.evaluate(current["battle"], legal, model_action)
-                if int(final_action) == model_action:
-                    continue
+                reason, recorded_kind = _find_recorded_reason(
+                    current["candidate_actions_json"], final_action
+                )
+                if not reason:
+                    try:
+                        reasoning = json.loads(current["reasoning_json"] or "{}")
+                        reason = str(reasoning.get("reason", "") or "")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        reason = ""
 
-                chosen_eval = next((e for e in evaluations if int(e.action) == int(final_action)), None)
-                reason = chosen_eval.reason if chosen_eval else ""
                 transition = _actual_transition(current["snapshot"], next_row["snapshot"])
-                target = _switch_target_name(current["battle"], int(final_action))
+                target = _switch_target_name(current["battle"], final_action)
                 switch_match = None
                 if final_action >= 4:
                     switch_match = (
@@ -183,10 +224,12 @@ def audit(database: Path, output: Path, limit: int = 0) -> dict:
                 records.append({
                     "battle_id": battle_id,
                     "turn": current["turn"],
+                    "db_id": current["id"],
                     "model_action": model_action,
-                    "final_action": int(final_action),
-                    "source": reason.split(" |")[-1].strip() if reason else "unknown",
+                    "final_action": final_action,
+                    "source": _source_from_reason(reason),
                     "reason": reason,
+                    "recorded_kind": recorded_kind,
                     "final_kind": "switch" if final_action >= 4 else "move",
                     "switch_target": target,
                     "transition": transition,
@@ -196,11 +239,12 @@ def audit(database: Path, output: Path, limit: int = 0) -> dict:
                 errors += 1
 
     override_kinds = Counter(r["final_kind"] for r in records)
+    source_counts = Counter(r["source"] for r in records)
     opponent_responses = Counter(r["transition"]["opponent_response"] for r in records)
     switch_overrides = [r for r in records if r["final_kind"] == "switch"]
     move_overrides = [r for r in records if r["final_kind"] == "move"]
-    switch_matches = [r for r in switch_overrides if r["switch_execution_match"] is not None]
-    matched = [r for r in switch_matches if r["switch_execution_match"]]
+    switch_checks = [r for r in switch_overrides if r["switch_execution_match"] is not None]
+    matched = [r for r in switch_checks if r["switch_execution_match"]]
     pressure_after_switch = [
         r for r in matched
         if r["transition"]["opponent_response"] == "non-switch_pressure"
@@ -212,11 +256,12 @@ def audit(database: Path, output: Path, limit: int = 0) -> dict:
         "errors": errors,
         "duplicate_rows_collapsed": duplicate_turn_count,
         "override_kinds": dict(override_kinds),
+        "override_sources": dict(source_counts),
         "actual_opponent_responses": dict(opponent_responses),
         "switch_overrides": len(switch_overrides),
         "switch_execution_matches": len(matched),
-        "switch_execution_failures": len(switch_matches) - len(matched),
-        "switch_execution_match_rate": (len(matched) / len(switch_matches)) if switch_matches else None,
+        "switch_execution_failures": len(switch_checks) - len(matched),
+        "switch_execution_match_rate": (len(matched) / len(switch_checks)) if switch_checks else None,
         "switches_followed_by_observed_pressure": len(pressure_after_switch),
         "successful_switch_survival": len(survived_switch),
         "move_overrides": len(move_overrides),
@@ -233,7 +278,7 @@ def audit(database: Path, output: Path, limit: int = 0) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Audit actual next-turn outcomes of TacticalEvaluator overrides")
+    parser = argparse.ArgumentParser(description="Audit actual transitions using recorded final actions")
     parser.add_argument("--database", default="battle_data/battles.db")
     parser.add_argument("--output", default="battle_data/real_transition_audit.json")
     parser.add_argument("--limit", type=int, default=0)
@@ -244,6 +289,7 @@ def main() -> None:
         "errors": payload["errors"],
         "duplicate_rows_collapsed": payload["duplicate_rows_collapsed"],
         "override_kinds": payload["override_kinds"],
+        "override_sources": payload["override_sources"],
         "actual_opponent_responses": payload["actual_opponent_responses"],
         "switch_overrides": payload["switch_overrides"],
         "switch_execution_match_rate": payload["switch_execution_match_rate"],
