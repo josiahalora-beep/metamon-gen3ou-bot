@@ -20,9 +20,9 @@ def classify_reason(reason: str) -> str:
         return "response_search"
     if "threat" in text or "hidden" in text:
         return "threat_response"
-    if "strategic" in text or "win-condition" in text or "win condition" in text:
+    if "strategic" in text or "win-condition" in text or "win condition" in text or "hazard plan:" in text:
         return "strategic"
-    if "safety" in text or "hp" in text or "ko risk" in text or "dangerous" in text:
+    if "safety" in text or "hp" in text or "ko risk" in text or "dangerous" in text or "low-hp preservation" in text or "anti-throw" in text:
         return "safety"
     return "other"
 
