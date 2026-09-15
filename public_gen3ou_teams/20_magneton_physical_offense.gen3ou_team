@@ -11,6 +11,7 @@ Salamence @ Leftovers
 Ability: Intimidate
 EVs: 4 HP / 252 SpA / 252 Spe
 Naive Nature
+IVs: 30 SpA / 30 SpD / 30 Spe
 - Dragon Claw
 - Fire Blast
 - Brick Break
@@ -20,6 +21,7 @@ Magneton @ Magnet
 Ability: Magnet Pull
 EVs: 4 HP / 252 SpA / 252 Spe
 Modest Nature
+IVs: 2 Atk / 30 SpA / 30 Spe
 - Thunderbolt
 - Hidden Power [Fire]
 - Toxic
@@ -47,6 +49,7 @@ Dugtrio @ Choice Band
 Ability: Arena Trap
 EVs: 4 HP / 252 Atk / 252 Spe
 Jolly Nature
+IVs: 30 Atk / 30 Def / 30 SpD
 - Earthquake
 - Rock Slide
 - Aerial Ace
