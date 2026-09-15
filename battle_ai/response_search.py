@@ -39,6 +39,9 @@ class ResponseSearcher:
     _SWITCH_MASS_FOR_IMMUNE_OVERRIDE = 0.50
     _SWITCH_MASS_FOR_WEAK_OVERRIDE = 0.35
     _WEAK_CURRENT_RATIO = 0.25
+    _MODEL_SWITCH_HP_FLOOR = 0.30
+    _MODEL_SWITCH_POISON_HP_FLOOR = 0.45
+    _SWITCH_OVERRIDE_MARGIN = 4.0
 
     def __init__(self, opponent_model: OpponentModel | None = None, *, override_margin: float = 1.5):
         self.opponent_model = opponent_model or OpponentModel()
@@ -162,6 +165,53 @@ class ResponseSearcher:
                 survival_bonus += 4.0 * max(0.0, 1.0 - self._matchup(self._move_type(move_obj), candidate))
         return survival_bonus
 
+    def _model_switch_is_protected(self, battle: Any, model_action: int) -> bool:
+        if model_action < 4:
+            return False
+        active = getattr(battle, "active_pokemon", None)
+        if active is None:
+            return False
+        hp = float(getattr(active, "current_hp_fraction", 1.0) or 1.0)
+        status = str(getattr(getattr(active, "status", None), "name", getattr(active, "status", "")) or "").lower()
+        # Once the policy has elected to preserve a genuinely endangered
+        # Pokémon, prediction must not casually force it back into combat.
+        if hp <= self._MODEL_SWITCH_HP_FLOOR:
+            return True
+        if hp <= self._MODEL_SWITCH_POISON_HP_FLOOR and "poison" in status:
+            return True
+        return False
+
+    def _predictive_attack_can_override_switch(self, battle: Any, action: int, responses: list[PredictedResponse], switch_mass: float) -> bool:
+        if action >= 4:
+            return False
+        current_damage, current_ko, reliable = self._current_damage(battle, action)
+        if not reliable:
+            return False
+        # A switch-punishing attack needs either a real immediate KO or a very
+        # strong, specific switch posterior. Ordinary 20–30% switch guesses do
+        # not justify abandoning the learned switch decision.
+        if current_ko >= 0.85:
+            return True
+        if switch_mass < 0.45:
+            return False
+        for response in responses:
+            if response.kind != "switch" or response.probability < 0.18 or not response.target:
+                continue
+            candidate = next((p for p in self._switch_slots(battle)
+                              if str(getattr(p, "species", "")).lower().replace(" ", "").replace("-", "") == response.target), None)
+            if candidate is None:
+                continue
+            active = getattr(battle, "active_pokemon", None)
+            if active is None:
+                continue
+            moves = list(getattr(active, "moves", {}).values())
+            if action >= len(moves):
+                continue
+            branch = calculate_damage(active, candidate, moves[action], weather="")
+            if branch.reliable and branch.ko_probability >= 0.80:
+                return True
+        return False
+
     def choose(self, battle: Any, legal_actions: list[int], model_action: int) -> tuple[int | None, str, list[ResponseScore]]:
         if not self._prediction_is_supported(battle):
             return None, "", []
@@ -185,12 +235,9 @@ class ResponseSearcher:
             model_damage, _, model_reliable = self._current_damage(battle, int(model_action))
 
             if int(action) < 4 and current_reliable:
-                # Never predict our way into a known immunity unless the model
-                # has strong evidence of a specific switch target.
-                if current_damage <= 0.0 and (switch_mass < self._SWITCH_MASS_FOR_IMMUNE_OVERRIDE or not any(r.target for r in actionable if r.kind == "switch")):
-                    expected = min(expected, 0.0)
-                # A move that is dramatically worse on the current target needs
-                # meaningful switch probability to overcome the learned policy.
+                if current_damage <= 0.0:
+                    if switch_mass < self._SWITCH_MASS_FOR_IMMUNE_OVERRIDE or not any(r.target for r in actionable if r.kind == "switch"):
+                        expected = min(expected, 0.0)
                 if (int(action) != int(model_action) and model_action < 4 and model_reliable
                         and current_damage < model_damage * self._WEAK_CURRENT_RATIO
                         and switch_mass < self._SWITCH_MASS_FOR_WEAK_OVERRIDE):
@@ -205,8 +252,20 @@ class ResponseSearcher:
         model = next((s for s in scores if s.action == int(model_action)), None)
         if model is None:
             return best.action, "response search chose highest expected value legal action", scores
+
+        # Critical policy protection: when the learned model says SWITCH with
+        # an endangered/poisoned active, response search cannot repeatedly talk
+        # it back into combat unless there is an immediate KO or high-confidence
+        # switch punishment that is worth the risk.
+        if self._model_switch_is_protected(battle, int(model_action)):
+            if not self._predictive_attack_can_override_switch(battle, int(best.action), responses, switch_mass):
+                return None, "", scores
+
         advantage = best.score - model.score
-        if best.action == model.action or advantage < self.override_margin:
+        required_margin = self.override_margin
+        if int(model_action) >= 4:
+            required_margin = max(required_margin, self._SWITCH_OVERRIDE_MARGIN)
+        if best.action == model.action or advantage < required_margin:
             return None, "", scores
 
         top_responses = ", ".join(
