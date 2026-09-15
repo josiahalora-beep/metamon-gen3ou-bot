@@ -5,12 +5,13 @@ import json
 import random
 import sqlite3
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace as NS
 from typing import Any, Iterable
 
 from battle_ai.damage import calculate_damage, type_multiplier
-from battle_ai.opponent_model import OpponentModel, PredictedResponse
+from battle_ai.opponent_model import OpponentModel
 from metamon.interface import consistent_move_order, consistent_pokemon_order
 
 TEAM_MATRIX_NAMES = (
@@ -73,7 +74,7 @@ def _hp(pokemon: Any) -> float:
 
 
 def _move_for_action(battle: Any, action: int) -> Any | None:
-    if not 0 <= action < 4:
+    if not 0 <= action < 4 or getattr(battle, "active_pokemon", None) is None:
         return None
     moves = list((getattr(battle.active_pokemon, "moves", {}) or {}).values())
     try:
@@ -99,7 +100,7 @@ def _switch_for_action(battle: Any, action: int) -> Any | None:
 
 
 def _legal_actions(battle: Any) -> list[int]:
-    moves = list((getattr(battle.active_pokemon, "moves", {}) or {}).values())
+    moves = list((getattr(getattr(battle, "active_pokemon", None), "moves", {}) or {}).values())
     switches = [
         p for p in (getattr(battle, "team", {}) or {}).values()
         if p is not None and not getattr(p, "fainted", False) and not getattr(p, "active", False)
@@ -129,20 +130,32 @@ def _remaining_team_value(team: Iterable[Any]) -> float:
     return value
 
 
-def _coverage_value(our_team: Iterable[Any], target: Any) -> float:
-    if target is None:
-        return 0.0
-    target_types = list(getattr(target, "types", ()) or ())
-    score = 0.0
-    for pokemon in our_team:
+def _move_signature(team: Iterable[Any]) -> tuple[tuple[str, str, int], ...]:
+    rows: list[tuple[str, str, int]] = []
+    for pokemon in team:
         if getattr(pokemon, "fainted", False):
             continue
         for move in (getattr(pokemon, "moves", {}) or {}).values():
-            if int(getattr(move, "base_power", 0) or 0) <= 0:
-                continue
-            mult = type_multiplier(_key(getattr(move, "type", "")), target_types)
-            score += 1.0 if mult >= 2.0 else 0.5 if mult > 1.0 else 0.0
+            base_power = int(getattr(move, "base_power", 0) or 0)
+            if base_power > 0:
+                rows.append((_species(pokemon), _key(getattr(move, "type", "")), base_power))
+    return tuple(sorted(rows))
+
+
+@lru_cache(maxsize=8192)
+def _coverage_cached(move_signature: tuple[tuple[str, str, int], ...], target_types: tuple[str, ...]) -> float:
+    score = 0.0
+    for _, move_type, _ in move_signature:
+        mult = type_multiplier(move_type, target_types)
+        score += 1.0 if mult >= 2.0 else 0.5 if mult > 1.0 else 0.0
     return min(8.0, score)
+
+
+def _coverage_value(our_team: Iterable[Any], target: Any) -> float:
+    if target is None:
+        return 0.0
+    target_types = tuple(_key(t) for t in (getattr(target, "types", ()) or ()))
+    return _coverage_cached(_move_signature(our_team), target_types)
 
 
 def position_value(our_team: Iterable[Any], opponent_team: Iterable[Any], our_active: Any, opponent_active: Any) -> float:
@@ -155,18 +168,24 @@ def position_value(our_team: Iterable[Any], opponent_team: Iterable[Any], our_ac
     return ours - theirs + speed + coverage
 
 
-def _copy_pokemon(pokemon: Any, *, active: bool | None = None, hp_fraction: float | None = None) -> Any:
+def _copy_pokemon(pokemon: Any, *, active: bool | None = None) -> Any:
     clone = NS(**vars(pokemon))
     if active is not None:
         clone.active = active
-    if hp_fraction is not None:
-        clone.current_hp_fraction = hp_fraction
-        max_hp = float(getattr(clone, "max_hp", 0) or 0)
-        if max_hp > 0:
-            clone.current_hp = max(0, int(round(max_hp * hp_fraction)))
-        if hp_fraction <= 0.0:
-            clone.fainted = True
     return clone
+
+
+def _apply_damage(target: Any, damage_fraction: float, ko_probability: float) -> None:
+    target_hp = _hp(target)
+    new_hp = max(0.0, target_hp * (1.0 - damage_fraction))
+    target.current_hp_fraction = new_hp
+    max_hp = float(getattr(target, "max_hp", 0) or 0)
+    if max_hp > 0:
+        target.current_hp = max(0, int(round(max_hp * new_hp)))
+    if ko_probability >= 0.95 or new_hp <= 0.01:
+        target.current_hp_fraction = 0.0
+        target.current_hp = 0
+        target.fainted = True
 
 
 def _damage_fraction(attacker: Any, defender: Any, move: Any) -> tuple[float, bool, float]:
@@ -179,7 +198,11 @@ def _damage_fraction(attacker: Any, defender: Any, move: Any) -> tuple[float, bo
 
 def _responses(battle: Any, model: OpponentModel) -> list[ResponseBranch]:
     raw = model.predict_responses(battle)
-    branches = [ResponseBranch(r.kind, r.probability, r.target, r.move) for r in raw if r.kind != "unknown" and r.probability > 0.01]
+    branches = [
+        ResponseBranch(r.kind, r.probability, r.target, r.move)
+        for r in raw
+        if r.kind != "unknown" and r.probability > 0.01
+    ]
     total = sum(max(0.0, b.probability) for b in branches)
     if not branches or total <= 0:
         return [ResponseBranch("unknown", 1.0)]
@@ -192,8 +215,10 @@ def _response_target(battle: Any, response: ResponseBranch) -> Any | None:
     if response.kind != "switch" or not response.target:
         return None
     return next(
-        (p for p in (getattr(battle, "opponent_team", {}) or {}).values()
-         if p is not None and not getattr(p, "fainted", False) and _species(p) == response.target),
+        (
+            p for p in (getattr(battle, "opponent_team", {}) or {}).values()
+            if p is not None and not getattr(p, "fainted", False) and _species(p) == response.target
+        ),
         None,
     )
 
@@ -206,30 +231,30 @@ def _apply_turn(battle: Any, action: int, response: ResponseBranch) -> float:
     if our_active is None or opp_active is None:
         return position_value(our_team, opp_team, our_active, opp_active)
 
-    new_our = {id(p): _copy_pokemon(p) for p in our_team}
-    new_opp = {id(p): _copy_pokemon(p) for p in opp_team}
-    our_active2 = new_our.get(id(our_active), _copy_pokemon(our_active, active=True))
-    opp_active2 = new_opp.get(id(opp_active), _copy_pokemon(opp_active, active=True))
+    # Only clone team members whose HP/status/boosts can actually change. This avoids
+    # rebuilding a six-Pokemon object graph for every branch.
+    our_active2 = _copy_pokemon(our_active, active=True)
+    opp_active2 = _copy_pokemon(opp_active, active=True)
+    our_team2 = list(our_team)
+    opp_team2 = list(opp_team)
 
     switched = _switch_for_action(battle, action)
     if switched is not None:
-        our_active2 = new_our.get(id(switched), _copy_pokemon(switched, active=True))
+        our_active2 = _copy_pokemon(switched, active=True)
+        our_team2 = [our_active2 if p is switched else p for p in our_team]
     else:
         move = _move_for_action(battle, action)
         target = opp_active2
         predicted_switch = _response_target(battle, response)
         if predicted_switch is not None:
-            target = new_opp.get(id(predicted_switch), target)
-            target.active = True
+            target = _copy_pokemon(predicted_switch, active=True)
+            opp_team2 = [target if p is predicted_switch else p for p in opp_team]
         if move is not None and int(getattr(move, "base_power", 0) or 0) > 0:
             dmg, reliable, ko = _damage_fraction(our_active2, target, move)
             if reliable:
-                target_hp = _hp(target)
-                target.current_hp_fraction = max(0.0, target_hp * (1.0 - dmg))
-                if ko >= 0.95 or target.current_hp_fraction <= 0.01:
-                    target.current_hp_fraction = 0.0
-                    target.current_hp = 0
-                    target.fainted = True
+                _apply_damage(target, dmg, ko)
+                if predicted_switch is None:
+                    opp_team2 = [target if p is opp_active else p for p in opp_team]
         opp_active2 = target
 
     if response.kind == "attack" and response.move:
@@ -240,24 +265,29 @@ def _apply_turn(battle: Any, action: int, response: ResponseBranch) -> float:
         if opp_move is not None and int(getattr(opp_move, "base_power", 0) or 0) > 0 and not getattr(our_active2, "fainted", False):
             dmg, reliable, ko = _damage_fraction(opp_active2, our_active2, opp_move)
             if reliable:
-                our_active2.current_hp_fraction = max(0.0, _hp(our_active2) * (1.0 - dmg))
-                if ko >= 0.95 or our_active2.current_hp_fraction <= 0.01:
-                    our_active2.current_hp_fraction = 0.0
-                    our_active2.current_hp = 0
-                    our_active2.fainted = True
+                _apply_damage(our_active2, dmg, ko)
+                our_team2 = [our_active2 if p is our_active else p for p in our_team2]
     elif response.kind == "setup":
         boosts = dict(getattr(opp_active2, "boosts", {}) or {})
         boosts["atk"] = min(6, int(boosts.get("atk", 0) or 0) + 1)
         boosts["spa"] = min(6, int(boosts.get("spa", 0) or 0) + 1)
         opp_active2.boosts = boosts
-    elif response.kind == "passive":
-        if not _key(getattr(our_active2, "status", "")):
-            our_active2.status = "tox"
+        opp_team2 = [opp_active2 if p is opp_active else p for p in opp_team2 if p is not opp_active] + [opp_active2]
+    elif response.kind == "passive" and not _key(getattr(our_active2, "status", "")):
+        our_active2.status = "tox"
+        our_team2 = [our_active2 if p is our_active else p for p in our_team2]
 
-    return position_value(new_our.values(), new_opp.values(), our_active2, opp_active2)
+    return position_value(our_team2, opp_team2, our_active2, opp_active2)
 
 
-def evaluate_actions(battle: Any, base_action: int, predictive_action: int, *, matrix: str, model: OpponentModel | None = None) -> CounterfactualResult:
+def evaluate_actions(
+    battle: Any,
+    base_action: int,
+    predictive_action: int,
+    *,
+    matrix: str,
+    model: OpponentModel | None = None,
+) -> CounterfactualResult:
     model = model or OpponentModel()
     branches = _responses(battle, model)
     base_values = [_apply_turn(battle, base_action, b) for b in branches]
@@ -266,21 +296,21 @@ def evaluate_actions(battle: Any, base_action: int, predictive_action: int, *, m
     predictive_expected = sum(b.probability * value for b, value in zip(branches, predictive_values))
     expected_delta = predictive_expected - base_expected
 
-    likely = sorted(
-        zip(branches, base_values, predictive_values),
-        key=lambda row: row[0].probability,
-        reverse=True,
-    )
+    likely = sorted(zip(branches, base_values, predictive_values), key=lambda row: row[0].probability, reverse=True)
     branch_deltas = [predictive_value - base_value for _, base_value, predictive_value in likely[:3]]
     worst_likely_delta = min(branch_deltas) if branch_deltas else expected_delta
 
     predictive_move = _move_for_action(battle, predictive_action)
-    self_ko_override = bool(predictive_move is not None and _key(predictive_move) in SELF_KO and base_action >= 4)
+    self_ko_override = bool(
+        predictive_move is not None and _key(predictive_move) in SELF_KO and base_action >= 4
+    )
     active = getattr(battle, "active_pokemon", None)
     active_species = _species(active) if active is not None else ""
     is_key = active_species in KEY_WIN_CONDITION
     low_hp = _hp(active) <= 0.40 if active is not None else False
-    win_condition_sacrifice = bool(base_action >= 4 and predictive_action < 4 and (is_key or low_hp) and expected_delta < -2.0)
+    win_condition_sacrifice = bool(
+        base_action >= 4 and predictive_action < 4 and (is_key or low_hp) and expected_delta < -2.0
+    )
 
     top = branches[0]
     return CounterfactualResult(
@@ -308,6 +338,8 @@ def _synthetic_battle(rng: random.Random, index: int, matrix: str) -> Any:
         "thunderbolt": (95, "Electric"), "toxic": (0, "Poison"), "meteor_mash": (100, "Steel"),
         "spikes": (0, "Ground"), "drillpeck": (80, "Flying"), "leechseed": (0, "Grass"),
         "psychic": (90, "Psychic"), "gigadrain": (75, "Grass"), "roar": (0, "Normal"),
+        "brickbreak": (75, "Fighting"), "megahorn": (120, "Bug"), "swordsdance": (0, "Normal"),
+        "curse": (0, "Ghost"),
     }
     archetypes = [
         ("tyranitar", ("Rock", "Dark"), ["rockslide", "earthquake", "dragondance", "doubleedge"]),
@@ -321,10 +353,19 @@ def _synthetic_battle(rng: random.Random, index: int, matrix: str) -> Any:
         ("heracross", ("Bug", "Fighting"), ["brickbreak", "rockslide", "swordsdance", "megahorn"]),
         ("snorlax", ("Normal",), ["doubleedge", "earthquake", "curse", "recover"]),
     ]
+
     def mon(name: str, types: tuple[str, ...], ids: list[str], hp: float, active: bool = False) -> Any:
         moves = {
-            move_id: NS(id=move_id, name=move_id, base_power=move_data[move_id][0], type=NS(name=move_data[move_id][1]), category=NS(name="Physical"), priority=0)
-            for move_id in ids if move_id in move_data
+            move_id: NS(
+                id=move_id,
+                name=move_id,
+                base_power=move_data[move_id][0],
+                type=NS(name=move_data[move_id][1]),
+                category=NS(name="Physical"),
+                priority=0,
+            )
+            for move_id in ids
+            if move_id in move_data
         }
         stats = {"atk": 236, "def": 236, "spa": 236, "spd": 236, "spe": rng.choice([180, 220, 260, 300, 340])}
         return NS(
@@ -335,6 +376,7 @@ def _synthetic_battle(rng: random.Random, index: int, matrix: str) -> Any:
             stats=stats, boosts={"atk": 0, "def": 0, "spa": 0, "spd": 0, "spe": 0},
             moves=moves, fainted=False, active=active,
         )
+
     own_name, own_types, own_moves = rng.choice(archetypes)
     opp_name, opp_types, opp_moves = rng.choice([x for x in archetypes if x[0] != own_name])
     own = mon(own_name, own_types, own_moves, rng.choice([0.15, 0.25, 0.35, 0.50, 0.70, 1.0]), True)
@@ -356,9 +398,8 @@ def _synthetic_battle(rng: random.Random, index: int, matrix: str) -> Any:
 
 def generate_synthetic_cases(samples: int, seed: int = 7) -> list[tuple[str, Any, int, int]]:
     rng = random.Random(seed)
-    cases = []
-    attempts = max(0, int(samples))
-    for i in range(attempts):
+    cases: list[tuple[str, Any, int, int]] = []
+    for i in range(max(0, int(samples))):
         matrix = TEAM_MATRIX_NAMES[i % len(TEAM_MATRIX_NAMES)]
         battle = _synthetic_battle(rng, i, matrix)
         legal = _legal_actions(battle)
@@ -373,7 +414,10 @@ def generate_synthetic_cases(samples: int, seed: int = 7) -> list[tuple[str, Any
 
 
 def run_synthetic(samples: int, seed: int = 7) -> dict[str, Any]:
-    results = [evaluate_actions(battle, base, predictive, matrix=matrix) for matrix, battle, base, predictive in generate_synthetic_cases(samples, seed)]
+    results = [
+        evaluate_actions(battle, base, predictive, matrix=matrix)
+        for matrix, battle, base, predictive in generate_synthetic_cases(samples, seed)
+    ]
     return {
         "mode": "synthetic", "seed": seed, "requested_samples": int(samples), "evaluated_cases": len(results),
         "negative_delta_cases": sum(r.expected_delta < -2.0 for r in results),
@@ -405,19 +449,23 @@ def audit_recorded(database: Path, limit: int = 0) -> list[CounterfactualResult]
     finally:
         db.close()
     from benchmark_counterfactual import battle_from_snapshot
-    results = []
-    evaluator_model = OpponentModel()
     from battle_ai.evaluator import TacticalEvaluator
+
+    results: list[CounterfactualResult] = []
+    evaluator_model = OpponentModel()
+    evaluator = TacticalEvaluator()
     for battle_id, turn, raw, base_action in rows:
         try:
             battle = battle_from_snapshot(json.loads(raw))
             legal = _legal_actions(battle)
             if int(base_action) not in legal:
                 continue
-            final, _ = TacticalEvaluator().evaluate(battle, legal, int(base_action))
+            final, _ = evaluator.evaluate(battle, legal, int(base_action))
             if int(final) == int(base_action):
                 continue
-            results.append(evaluate_actions(battle, int(base_action), int(final), matrix="recorded", model=evaluator_model))
+            results.append(
+                evaluate_actions(battle, int(base_action), int(final), matrix="recorded", model=evaluator_model)
+            )
         except Exception:
             continue
     return results
@@ -431,6 +479,7 @@ def main() -> None:
     parser.add_argument("--recorded-limit", type=int, default=0)
     parser.add_argument("--output", default="battle_data/counterfactual_gen3_report.json")
     args = parser.parse_args()
+
     payload: dict[str, Any] = {}
     if args.synthetic > 0:
         payload["synthetic"] = run_synthetic(args.synthetic, args.seed)
@@ -449,6 +498,7 @@ def main() -> None:
             }
         except (sqlite3.Error, FileNotFoundError):
             payload["recorded"] = {"error": "recorded database unavailable"}
+
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
