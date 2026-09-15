@@ -16,17 +16,14 @@ class ResponseScore:
 
     @property
     def expected(self) -> float:
-        """Backward-compatible alias used by diagnostics/tests."""
         return self.opponent_expected
 
 
 class ResponseSearcher:
-    """Small expectiminimax-style evaluator over predicted opponent responses.
+    """Bounded response search anchored to the learned policy.
 
-    This deliberately searches only the response branches supported by visible
-    battle data and the opponent posterior. It does not assume hidden moves are
-    known with certainty and it never replaces a strong model action for a tiny
-    numerical advantage.
+    Prediction may enhance a move, but hidden or weakly-supported future
+    branches cannot make an objectively bad current-board move preferable.
     """
 
     _MOVE_TYPES = {
@@ -35,8 +32,13 @@ class ResponseSearcher:
         "gigadrain": "grass", "leafstorm": "grass", "energyball": "grass", "earthquake": "ground",
         "rockslide": "rock", "bodyslam": "normal", "return": "normal", "doubleedge": "normal",
         "brickbreak": "fighting", "focuspunch": "fighting", "sludgebomb": "poison", "drillpeck": "flying",
-        "hiddenpower": "normal", "crunch": "dark", "meteor_mash": "steel", "meteormash": "steel",
+        "hiddenpower": "normal", "crunch": "dark", "meteormash": "steel",
     }
+
+    _KNOWN_RESPONSE_MIN = 0.08
+    _SWITCH_MASS_FOR_IMMUNE_OVERRIDE = 0.50
+    _SWITCH_MASS_FOR_WEAK_OVERRIDE = 0.35
+    _WEAK_CURRENT_RATIO = 0.25
 
     def __init__(self, opponent_model: OpponentModel | None = None, *, override_margin: float = 1.5):
         self.opponent_model = opponent_model or OpponentModel()
@@ -87,12 +89,9 @@ class ResponseSearcher:
 
     @staticmethod
     def _prediction_is_supported(battle: Any) -> bool:
-        """Require enough opponent information before heuristic search can override the policy."""
         opponent = getattr(battle, "opponent_active_pokemon", None)
         if opponent is None:
             return False
-        # Legacy/unit-test states with no opponent roster and completely hidden
-        # stats contain insufficient evidence for meaningful response search.
         opponent_team = getattr(battle, "opponent_team", {}) or {}
         if not opponent_team:
             stats = getattr(opponent, "stats", {}) or {}
@@ -103,6 +102,19 @@ class ResponseSearcher:
             if not has_known_stats and not has_species_stats and not revealed_moves:
                 return False
         return True
+
+    def _current_damage(self, battle: Any, action: int) -> tuple[float, float, bool]:
+        active = getattr(battle, "active_pokemon", None)
+        target = getattr(battle, "opponent_active_pokemon", None)
+        if active is None or target is None or action >= 4:
+            return 0.0, 0.0, False
+        moves = list(getattr(active, "moves", {}).values())
+        if not (0 <= action < len(moves)):
+            return 0.0, 0.0, False
+        result = calculate_damage(active, target, moves[action], weather="")
+        if not result.reliable:
+            return 0.0, 0.0, False
+        return float(result.percentage_max), float(result.ko_probability), True
 
     def _own_action_value(self, battle: Any, action: int, response: PredictedResponse) -> float:
         active = getattr(battle, "active_pokemon", None)
@@ -123,15 +135,15 @@ class ResponseSearcher:
                 candidate = next((p for p in self._switch_slots(battle)
                                   if str(getattr(p, "species", "")).lower().replace(" ", "").replace("-", "") == response.target), None)
                 if candidate is not None:
-                    result = calculate_damage(active, candidate, move, weather="")
-                    if result.reliable:
-                        value = 0.12 * result.percentage_max + 9.0 * result.ko_probability
+                    branch = calculate_damage(active, candidate, move, weather="")
+                    if branch.reliable:
+                        value = 0.12 * branch.percentage_max + 9.0 * branch.ko_probability
                     move_type = self._move_type(move)
                     if move_type:
                         value += 3.0 * self._matchup(move_type, candidate)
-            if response.kind == "protect":
+            elif response.kind == "protect":
                 value += 2.0 if self._move_id(move) in {"protect", "detect", "endure"} else -6.0
-            if response.kind == "setup":
+            elif response.kind == "setup":
                 value += 4.0 * own_ko
             return value
 
@@ -147,8 +159,7 @@ class ResponseSearcher:
                 damage = calculate_damage(target, candidate, move_obj, weather="")
                 if damage.reliable:
                     survival_bonus += max(0.0, 20.0 - damage.percentage_max * 0.15)
-                move_type = self._move_type(move_obj)
-                survival_bonus += 4.0 * max(0.0, 1.0 - self._matchup(move_type, candidate))
+                survival_bonus += 4.0 * max(0.0, 1.0 - self._matchup(self._move_type(move_obj), candidate))
         return survival_bonus
 
     def choose(self, battle: Any, legal_actions: list[int], model_action: int) -> tuple[int | None, str, list[ResponseScore]]:
@@ -156,9 +167,11 @@ class ResponseSearcher:
             return None, "", []
 
         responses = self.opponent_model.predict_responses(battle)
-        if not responses:
+        actionable = [r for r in responses if r.kind != "unknown" and r.probability >= self._KNOWN_RESPONSE_MIN]
+        if not actionable:
             return None, "", []
 
+        switch_mass = sum(r.probability for r in actionable if r.kind == "switch" and r.target)
         scores: list[ResponseScore] = []
         for action in legal_actions:
             expected = 0.0
@@ -167,6 +180,22 @@ class ResponseSearcher:
                 branch = self._own_action_value(battle, int(action), response)
                 expected += response.probability * branch
                 branches.append((response.kind, response.probability, branch))
+
+            current_damage, _, current_reliable = self._current_damage(battle, int(action))
+            model_damage, _, model_reliable = self._current_damage(battle, int(model_action))
+
+            if int(action) < 4 and current_reliable:
+                # Never predict our way into a known immunity unless the model
+                # has strong evidence of a specific switch target.
+                if current_damage <= 0.0 and (switch_mass < self._SWITCH_MASS_FOR_IMMUNE_OVERRIDE or not any(r.target for r in actionable if r.kind == "switch")):
+                    expected = min(expected, 0.0)
+                # A move that is dramatically worse on the current target needs
+                # meaningful switch probability to overcome the learned policy.
+                if (int(action) != int(model_action) and model_action < 4 and model_reliable
+                        and current_damage < model_damage * self._WEAK_CURRENT_RATIO
+                        and switch_mass < self._SWITCH_MASS_FOR_WEAK_OVERRIDE):
+                    expected = min(expected, model_damage * 0.10)
+
             anchor = 1.25 if int(action) == int(model_action) else 0.0
             rationale = "; ".join(f"{k}={p:.0%}:{v:.1f}" for k, p, v in branches if p >= 0.05)
             scores.append(ResponseScore(int(action), expected + anchor, expected, rationale))
@@ -182,7 +211,7 @@ class ResponseSearcher:
 
         top_responses = ", ".join(
             f"{r.kind}{'->'+r.target if r.target else (':'+r.move if r.move else '')} {r.probability:.0%}"
-            for r in responses if r.probability >= 0.08
+            for r in actionable
         )
         reason = f"response search: model={model.action} EV={model.expected:.2f}; predicted={top_responses}; best={best.action} EV={best.expected:.2f}; advantage={advantage:.2f}; re-evaluated this turn"
         return best.action, reason, scores
