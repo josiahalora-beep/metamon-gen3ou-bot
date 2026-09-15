@@ -7,6 +7,7 @@ policy/evaluator path can be stress-tested locally without touching live ladder 
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import sys
 from pathlib import Path
@@ -21,9 +22,27 @@ import play_public_synthetic as runner
 from poke_env.ps_client.server_configuration import ServerConfiguration
 
 
+# Local Showdown uses the same Smogon authentication endpoint as poke-env's
+# LocalhostServerConfiguration. The local --no-security server does not need a
+# real password, so normalize our PowerShell-safe sentinel to None before the
+# shared runner builds AccountConfiguration.
+LOCAL_PASSWORD_SENTINEL = "local"
+_original_parse_args = argparse.ArgumentParser.parse_args
+
+
+def _parse_local_args(self, *args, **kwargs):
+    parsed = _original_parse_args(self, *args, **kwargs)
+    if getattr(parsed, "password", None) == LOCAL_PASSWORD_SENTINEL:
+        parsed.password = None
+    return parsed
+
+
+argparse.ArgumentParser.parse_args = _parse_local_args
+
+
 LOCAL_SERVER = ServerConfiguration(
     "ws://127.0.0.1:8000/showdown/websocket",
-    "http://127.0.0.1:8000/action.php?",
+    "https://play.pokemonshowdown.com/action.php?",
 )
 
 
