@@ -11,12 +11,7 @@ def _base_stats(obj: Any) -> dict[str, int]:
 
 
 def stat_range(obj: Any, stat: str, *, nature_min: float = 0.9, nature_max: float = 1.1) -> tuple[int, int] | None:
-    """Conservative Gen 3 level-100 stat range when EVs/IVs are hidden.
-
-    The range intentionally spans legal 0..252 EV and 0..31 IV values and all
-    possible nature multipliers. It is an uncertainty envelope, not a claim
-    about the opponent's actual set.
-    """
+    """Conservative Gen 3 level-100 stat range when EVs/IVs are hidden."""
     stats = getattr(obj, "stats", {}) or {}
     if isinstance(stats, dict):
         known = stats.get(stat)
@@ -41,7 +36,12 @@ def stat_range(obj: Any, stat: str, *, nature_min: float = 0.9, nature_max: floa
 
 
 def hp_range_from_observation(obj: Any) -> tuple[int, int] | None:
-    """Estimate current HP range when poke-env exposes placeholder max_hp=100."""
+    """Estimate current HP when poke-env exposes the Gen 3 placeholder max_hp=100.
+
+    The placeholder check is based on the observed HP representation rather
+    than an arbitrary base-HP threshold, so 100-base-HP Pokémon such as Celebi
+    and Swampert are handled correctly.
+    """
     frac = getattr(obj, "current_hp_fraction", None)
     if frac is None:
         return None
@@ -50,8 +50,20 @@ def hp_range_from_observation(obj: Any) -> tuple[int, int] | None:
     except (TypeError, ValueError):
         return None
     maximum = stat_range(obj, "hp")
-    if maximum is None:
+    if maximum is None or frac <= 0:
+        return maximum[0], maximum[0] if maximum is not None else None
+
+    observed_max_hp = getattr(obj, "max_hp", None)
+    try:
+        observed_max_hp = int(observed_max_hp) if observed_max_hp is not None else None
+    except (TypeError, ValueError):
+        observed_max_hp = None
+
+    # In the Gen 3 metamon/poke-env public battle path, unrevealed HP is
+    # represented with max_hp=100. A genuine level-100 competitive OU HP pool
+    # is above 100 for the Pokémon represented by this path, so use the species
+    # HP envelope when the placeholder is present.
+    placeholder = observed_max_hp == 100 and maximum[1] > 100
+    if not placeholder:
         return None
-    if frac <= 0:
-        return maximum[0], maximum[0]
     return max(1, int(maximum[0] * frac)), max(1, int(maximum[1] * frac))
