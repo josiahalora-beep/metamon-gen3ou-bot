@@ -14,6 +14,11 @@ class ResponseScore:
     opponent_expected: float
     rationale: str
 
+    @property
+    def expected(self) -> float:
+        """Compatibility alias for diagnostics and downstream callers."""
+        return self.score
+
 
 class ResponseSearcher:
     """Small expectiminimax-style evaluator over predicted opponent responses.
@@ -91,8 +96,9 @@ class ResponseSearcher:
             if action >= len(moves):
                 return -100.0
             move = moves[action]
-            own_damage = calculate_damage(active, target, move, weather="").percentage_max if calculate_damage(active, target, move, weather="").reliable else 0.0
-            own_ko = calculate_damage(active, target, move, weather="").ko_probability if calculate_damage(active, target, move, weather="").reliable else 0.0
+            result = calculate_damage(active, target, move, weather="")
+            own_damage = result.percentage_max if result.reliable else 0.0
+            own_ko = result.ko_probability if result.reliable else 0.0
             value = 0.10 * own_damage + 8.0 * own_ko
             if response.kind == "switch" and response.target:
                 candidate = next((p for p in self._switch_slots(battle) if str(getattr(p, "species", "")).lower().replace(" ", "").replace("-", "") == response.target), None)
