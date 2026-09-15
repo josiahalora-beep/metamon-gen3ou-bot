@@ -26,7 +26,6 @@ from metamon.env.wrappers import ChallengeByUsername
 from metamon.rl.metamon_to_amago import PSLadderAMAGOWrapper
 from poke_env.ps_client.server_configuration import ServerConfiguration
 
-
 LOCAL_SERVER = ServerConfiguration(
     "ws://127.0.0.1:8000/showdown/websocket",
     "https://play.pokemonshowdown.com/action.php?",
@@ -195,6 +194,7 @@ def make_local_challenge_env(
     opponent_username,
     role,
     player_team_set,
+    save_trajectories_to=None,
     battle_ai=None,
     battle_logger=None,
     decision_debug=False,
@@ -212,6 +212,7 @@ def make_local_challenge_env(
         opponent_username=opponent_username,
         role=role,
         battle_backend="poke-env",
+        save_trajectories_to=save_trajectories_to,
         battle_ai=battle_ai,
         battle_logger=battle_logger,
         decision_debug=decision_debug,
@@ -271,6 +272,7 @@ def run_role(args, role: str, username: str, opponent_username: str, log_dir: Pa
         opponent_username=opponent_username,
         role=role,
         player_team_set=player_team_set,
+        save_trajectories_to=str(args.trajectory_dir / role),
         battle_ai=tactical,
         battle_logger=logger,
         decision_debug=args.decision_debug,
@@ -279,6 +281,7 @@ def run_role(args, role: str, username: str, opponent_username: str, log_dir: Pa
     )
 
     print(f"[{role}] Local self-play: {username} vs {opponent_username} for {args.battles} battles", flush=True)
+    print(f"[{role}] AMAGO trajectories: {args.trajectory_dir / role / battle_format}", flush=True)
     results = agent.evaluate_test(
         [make_env],
         timesteps=args.battles * 1000,
@@ -301,6 +304,7 @@ def child_command(args, role, username, opponent_username, log_dir):
         "--battles", str(args.battles),
         "--temperature", str(args.temperature),
         "--log-dir", str(log_dir),
+        "--trajectory-dir", str(args.trajectory_dir),
         "--child-mode",
     ]
     if args.checkpoint is not None:
@@ -328,6 +332,7 @@ async def main():
     parser.add_argument("--checkpoint", type=int, default=None)
     parser.add_argument("--enable-battle-ai", action="store_true")
     parser.add_argument("--log-dir", default="battle_data/local_fast")
+    parser.add_argument("--trajectory-dir", type=Path, default=Path("battle_data/local_fast/trajectories"))
     parser.add_argument("--analysis", action="store_true")
     parser.add_argument("--config", default=None)
     parser.add_argument("--decision-debug", action="store_true")
@@ -337,6 +342,9 @@ async def main():
     parser.add_argument("--child-mode", action="store_true")
     parser.add_argument("--child-role", choices=["challenger", "acceptor"], default=None)
     args = parser.parse_args()
+
+    args.trajectory_dir = Path(args.trajectory_dir)
+    args.trajectory_dir.mkdir(parents=True, exist_ok=True)
 
     if args.child_mode:
         log_dir = Path(args.log_dir)
