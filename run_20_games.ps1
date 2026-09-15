@@ -12,7 +12,7 @@ finally {
 }
 
 try {
-    python play_public_synthetic.py `
+    python run_20_games_fixed.py `
         --username $Username `
         --password $password `
         --team_dir public_gen3ou_teams `
@@ -22,7 +22,6 @@ try {
         --log-dir battle_data\ladder20 `
         --database battle_data\ladder20\battles.db `
         --transport-debug `
-        --transport-trace battle_data\ladder20\transport_trace.jsonl `
         --analysis
 }
 finally {
