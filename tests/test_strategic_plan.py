@@ -90,9 +90,11 @@ class StrategicPlanTests(unittest.TestCase):
             with patch("battle_ai.strategic_plan._incoming_safe", return_value=(True, 20.0, "known attack")):
                 action, reason = strategic_opportunity_override(battle, [0, 1], 1)
 
-        self.assertEqual(action, 0)
+        # Production action indices use Metamon's canonical move ordering,
+        # which sorts move names alphabetically. In this fixture that means
+        # earthquake is slot 0 and spikes is slot 1.
+        self.assertEqual(action, 1)
         self.assertIn("Spikes layer 2/3", reason)
 
 
-if __name__ == "__main__":
-    unittest.main()
+if __name__ == "__main__": unittest.main()
