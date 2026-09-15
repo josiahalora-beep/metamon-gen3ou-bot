@@ -1,0 +1,133 @@
+========================================================================================================================
+LAST 10 PUBLIC BATTLES
+========================================================================================================================
+
+#1
+Battle:        battle-gen3ou-2681507912
+Opponent:      ThonydoSantos
+Team:          public_gen3ou_teams\08_mixzap_houdini.gen3ou_team
+Our lead:      None
+Opponent lead: skarmory
+Winner:        JorelMorell
+Result:        WIN
+Turns:         17
+Rating:        None
+Loss class:    
+Replay:        
+
+#2
+Battle:        battle-gen3ou-2681506926-c2qe94xvpengjjiggc1hlp01u6ju0ajpw
+Opponent:      SuckyLucky
+Team:          public_gen3ou_teams\03_four_bands.gen3ou_team
+Our lead:      None
+Opponent lead: swampert
+Winner:        SuckyLucky
+Result:        LOSS
+Turns:         114
+Rating:        None
+Loss class:    
+Replay:        
+
+#3
+Battle:        battle-gen3ou-2681506538-307tckcykr45vtfpu8fvyrxj9w3y8fopw
+Opponent:      ThePlasmaCelica
+Team:          public_gen3ou_teams\07_smeargle_spikes.gen3ou_team
+Our lead:      None
+Opponent lead: snorlax
+Winner:        ThePlasmaCelica
+Result:        LOSS
+Turns:         20
+Rating:        None
+Loss class:    
+Replay:        
+
+#4
+Battle:        battle-gen3ou-2681505722-cylp6vm429fegpn48srj53uldwdmmt9pw
+Opponent:      SuckyLucky
+Team:          public_gen3ou_teams\03_four_bands.gen3ou_team
+Our lead:      None
+Opponent lead: aerodactyl
+Winner:        JorelMorell
+Result:        WIN
+Turns:         74
+Rating:        None
+Loss class:    
+Replay:        
+
+#5
+Battle:        battle-gen3ou-2681503605
+Opponent:      COBBERBLOKE
+Team:          public_gen3ou_teams\10_raikou_slop.gen3ou_team
+Our lead:      None
+Opponent lead: skarmory
+Winner:        JorelMorell
+Result:        WIN
+Turns:         41
+Rating:        None
+Loss class:    
+Replay:        
+
+#6
+Battle:        battle-gen3ou-2681503000
+Opponent:      mitcHd2
+Team:          public_gen3ou_teams\07_smeargle_spikes.gen3ou_team
+Our lead:      None
+Opponent lead: wailord
+Winner:        mitcHd2
+Result:        LOSS
+Turns:         18
+Rating:        None
+Loss class:    
+Replay:        
+
+#7
+Battle:        battle-gen3ou-2681500749
+Opponent:      gimorcio
+Team:          public_gen3ou_teams\02_aerobi_zapdos.gen3ou_team
+Our lead:      None
+Opponent lead: smeargle
+Winner:        JorelMorell
+Result:        WIN
+Turns:         47
+Rating:        None
+Loss class:    
+Replay:        
+
+#8
+Battle:        battle-gen3ou-2681500359
+Opponent:      mitcHd2
+Team:          public_gen3ou_teams\02_aerobi_zapdos.gen3ou_team
+Our lead:      None
+Opponent lead: suicune
+Winner:        JorelMorell
+Result:        WIN
+Turns:         12
+Rating:        None
+Loss class:    
+Replay:        
+
+#9
+Battle:        battle-gen3ou-2681498731
+Opponent:      ThonydoSantos
+Team:          public_gen3ou_teams\06_refresh_mixmence.gen3ou_team
+Our lead:      None
+Opponent lead: celebi
+Winner:        JorelMorell
+Result:        WIN
+Turns:         29
+Rating:        None
+Loss class:    
+Replay:        
+
+#10
+Battle:        battle-gen3ou-2681498544-8m6j2aoftrl1djku5nqh1irwpgshu7lpw
+Opponent:      Balmora Resident
+Team:          public_gen3ou_teams\08_mixzap_houdini.gen3ou_team
+Our lead:      None
+Opponent lead: blissey
+Winner:        JorelMorell
+Result:        WIN
+Turns:         7
+Rating:        None
+Loss class:    
+Replay:        
