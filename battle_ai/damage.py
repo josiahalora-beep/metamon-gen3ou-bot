@@ -218,7 +218,9 @@ def calculate_damage(attacker: Any, defender: Any, move: Any, *, weather: str = 
         ko_probability = 1.0 if min_damage >= hp_hi else 0.0
     else:
         ko_probability = sum(v >= hp_lo for v in values) / len(values)
-    pct_min = 100.0 * min_damage / max(1, hp_known_value or hp_hi)
-    pct_max = 100.0 * max_damage / max(1, hp_known_value or hp_lo)
+    # Damage percentages must be relative to the defender's CURRENT HP.
+    # hp_range is a current-HP range, including the public Gen 3 placeholder-HPMAX case.
+    pct_min = 100.0 * min_damage / max(1, hp_hi)
+    pct_max = 100.0 * max_damage / max(1, hp_lo)
     reason = "estimated from species/base stats and observed HP" if estimated else ""
     return DamageRange(min_damage, max_damage, pct_min, pct_max, ko_probability, reliable=True, reason=reason)
