@@ -133,6 +133,7 @@ class TacticalEvaluator:
         chosen = int(model_action) if int(model_action) in legal_set else (min(legal_set) if legal_set else 0)
         safety_action = None
 
+        # 1) Protect streak safety is deterministic and takes precedence.
         sequence_action, sequence_reason = self._protect_sequence_breaker(
             active, target, move_slots, evaluations, chosen,
             weather=(state.weather[0] if state.weather else ""),
@@ -150,24 +151,7 @@ class TacticalEvaluator:
                     )
                     break
 
-        if safety_action is None:
-            response_action, response_reason, response_scores = self.response_search.choose(
-                battle, list(legal_set), chosen
-            )
-            if response_action is not None and response_action in legal_set and response_action != chosen:
-                chosen = response_action
-                safety_action = response_action
-                for i, evaluation in enumerate(evaluations):
-                    if evaluation.action == chosen:
-                        predictive_score = next((s.score for s in response_scores if s.action == chosen), evaluation.tactical_score)
-                        evaluations[i] = ActionEvaluation(
-                            evaluation.action, evaluation.kind, evaluation.label,
-                            predictive_score,
-                            evaluation.ko_probability,
-                            evaluation.reason + " | " + response_reason,
-                        )
-                        break
-
+        # 2) Hard threat response must beat speculative predictive search.
         if safety_action is None:
             threat_action, threat_reason = hidden_threat_switch_override(
                 battle, list(legal_set), chosen,
@@ -186,6 +170,8 @@ class TacticalEvaluator:
                         )
                         break
 
+        # 3) Strategic preservation/setup conversion has higher authority than
+        # opponent-response speculation because it reasons about our win state.
         if safety_action is None:
             strategic_action, strategic_reason = strategic_opportunity_override(
                 battle, list(legal_set), chosen
@@ -203,6 +189,27 @@ class TacticalEvaluator:
                         )
                         break
 
+        # 4) Predictive opponent modelling is deliberately downstream of hard
+        # tactical/strategic protections.
+        if safety_action is None:
+            response_action, response_reason, response_scores = self.response_search.choose(
+                battle, list(legal_set), chosen
+            )
+            if response_action is not None and response_action in legal_set and response_action != chosen:
+                chosen = response_action
+                safety_action = response_action
+                for i, evaluation in enumerate(evaluations):
+                    if evaluation.action == chosen:
+                        predictive_score = next((s.score for s in response_scores if s.action == chosen), evaluation.tactical_score)
+                        evaluations[i] = ActionEvaluation(
+                            evaluation.action, evaluation.kind, evaluation.label,
+                            predictive_score,
+                            evaluation.ko_probability,
+                            evaluation.reason + " | " + response_reason,
+                        )
+                        break
+
+        # 5) Final hard safety verifier.
         if self.override_mode in {"verifier", "rerank"} and chosen in legal_set and safety_action is None:
             decision = safety_override(battle, list(legal_set), chosen)
             if decision.action is not None and decision.action in legal_set and decision.action != chosen:
