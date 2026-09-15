@@ -31,7 +31,9 @@ def install_public_ladder_hardening() -> None:
 
     async def resilient_handle_message(self, message: str):
         try:
-            return await original_handle_message(message)
+            # original_handle_message is the unbound class method captured
+            # above, so preserve the instance explicitly.
+            return await original_handle_message(self, message)
         except ValueError:
             text = str(message or "").lower()
             # Privacy/battle-room notices should never tear down the message
