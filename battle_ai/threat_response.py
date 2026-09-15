@@ -74,6 +74,7 @@ def _base_stats(pokemon: Any) -> dict[str, int]:
 
 
 def _stat(pokemon: Any, stat: str) -> float:
+    """Use observed battle stats when available, otherwise exact Gen 3 base stats."""
     stats = getattr(pokemon, "stats", {}) or {}
     try:
         value = stats.get(stat) if isinstance(stats, dict) else getattr(stats, stat, None)
@@ -133,11 +134,11 @@ def hidden_threat_switch_override(
     model_action: int,
     move_map: dict[int, Any],
 ) -> tuple[int | None, str]:
-    """Use only broad, species/base-stat evidence when the opponent's moves are hidden.
+    """Use known Gen 3 species typing/base stats without fabricating hidden moves.
 
     This deliberately requires several signals before overriding the model:
-    a passive selected move, a fast/high-offense opposing active, and a teammate
-    with substantially better matching defensive bulk.
+    a passive selected move, a faster high-offense opposing active, and a teammate
+    with materially better defensive bulk or typing.
     """
     if not (0 <= int(model_action) < 4):
         return None, ""
@@ -168,9 +169,6 @@ def hidden_threat_switch_override(
     active_matchup = 1.0
     for attack_type in opponent_type_pressure:
         active_matchup = max(active_matchup, _type_multiplier(attack_type, active))
-    # Only invoke blind reasoning when the active is neutral-or-worse to the
-    # opponent's observed STAB typing. This avoids random switching from good
-    # defensive positions such as Water-resisting Grass types.
     if active_matchup < 1.0:
         return None, ""
 
@@ -194,8 +192,6 @@ def hidden_threat_switch_override(
         matchup_gain = active_matchup - matchup
 
         score = matchup_gain * 40.0 + max(0.0, bulk_gain) / 5.0
-        # A dedicated special sponge is particularly valuable against a faster
-        # special attacker even when the typing is neutral.
         if use_special and bulk_gain > 35:
             score += 8.0
         if matchup <= 0.5:
@@ -206,7 +202,10 @@ def hidden_threat_switch_override(
         if best is None or score > best[0]:
             best = (score, int(action), candidate, matchup, bulk_gain)
 
-    if best is None or best[0] < 18.0:
+    # A lower threshold catches clear special-sponge upgrades such as
+    # Celebi -> Blissey against a faster Starmie using only exact species
+    # typing/base-stat evidence; hidden EVs and moves are still not invented.
+    if best is None or best[0] < 14.0:
         return None, ""
 
     score, action, candidate, matchup, bulk_gain = best
