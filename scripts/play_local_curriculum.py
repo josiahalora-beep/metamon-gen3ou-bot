@@ -1,9 +1,9 @@
 """Continuous local curriculum self-play runner.
 
 Loads either the public SyntheticRLV2 checkpoint or a local finetune checkpoint,
-then reuses the battle-safe local challenge environment. TeamSet samples a fresh
-team independently for each side on every battle. The runner also patches the
-Metamon trajectory timestamp formatter so Windows never receives ':' in filenames.
+then reuses the battle-safe local challenge environment. Multiple independent
+self-play worker pairs can run concurrently against one accelerated Showdown
+server. Each worker has isolated logs/trajectory output.
 """
 from __future__ import annotations
 
@@ -20,8 +20,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# Import the existing safety-aware runner, then patch only the dependency's
-# Windows-invalid trajectory timestamp formatting before any environments run.
 import metamon.env.wrappers as metamon_wrappers
 from datetime import datetime as _RealDateTime
 
@@ -123,7 +121,7 @@ def run_role(args, role, username, opponent_username, log_dir):
     return 0
 
 
-def child_command(args, role, username, opponent_username, log_dir):
+def child_command(args, role, username, opponent_username, log_dir, trajectory_dir, battles):
     cmd = [
         sys.executable,
         str(Path(__file__).resolve()),
@@ -132,10 +130,10 @@ def child_command(args, role, username, opponent_username, log_dir):
         "--username", username,
         "--opponent-username", opponent_username,
         "--team-dir", args.team_dir,
-        "--battles", str(args.battles),
+        "--battles", str(battles),
         "--temperature", str(args.temperature),
         "--log-dir", str(log_dir),
-        "--trajectory-dir", str(args.trajectory_dir),
+        "--trajectory-dir", str(trajectory_dir),
         "--enable-battle-ai",
     ]
     if args.checkpoint is not None:
@@ -155,6 +153,7 @@ async def main():
     p.add_argument("--opponent-username", default="Curriculum-B")
     p.add_argument("--team-dir", default="public_gen3ou_teams")
     p.add_argument("--battles", type=int, default=100)
+    p.add_argument("--workers", type=int, default=2)
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--checkpoint", type=int, default=None)
     p.add_argument("--local-run-dir", default=None)
@@ -177,26 +176,55 @@ async def main():
         log_dir.mkdir(parents=True, exist_ok=True)
         raise SystemExit(run_role(args, args.child_role, args.username, args.opponent_username, log_dir))
 
+    workers = max(1, min(args.workers, args.battles))
+    if args.battles < 1:
+        raise ValueError("--battles must be at least 1")
+    print(f"Launching {workers} parallel self-play workers for {args.battles} total battles...", flush=True)
+
     base_log = Path(args.log_dir)
     base_log.mkdir(parents=True, exist_ok=True)
-    acceptor_dir = base_log / "selfplay_acceptor"
-    challenger_dir = base_log / "selfplay_challenger"
-    acceptor = subprocess.Popen(child_command(args, "acceptor", args.opponent_username, args.username, acceptor_dir), cwd=REPO_ROOT)
-    challenger = None
-    code = 1
+    worker_processes = []
+    base_battles = args.battles // workers
+    remainder = args.battles % workers
+
     try:
-        time.sleep(3.0)
-        challenger = subprocess.Popen(child_command(args, "challenger", args.username, args.opponent_username, challenger_dir), cwd=REPO_ROOT)
-        code = challenger.wait()
+        for worker in range(workers):
+            worker_battles = base_battles + (1 if worker < remainder else 0)
+            worker_root = args.trajectory_dir / f"worker_{worker + 1:02d}"
+            worker_log = base_log / f"worker_{worker + 1:02d}"
+            worker_root.mkdir(parents=True, exist_ok=True)
+            worker_log.mkdir(parents=True, exist_ok=True)
+            a_user = f"{args.username}-W{worker + 1}"
+            b_user = f"{args.opponent_username}-W{worker + 1}"
+            acceptor = subprocess.Popen(
+                child_command(args, "acceptor", b_user, a_user, worker_log / "acceptor", worker_root, worker_battles),
+                cwd=REPO_ROOT,
+            )
+            worker_processes.append((worker + 1, "acceptor", acceptor))
+            time.sleep(1.0)
+            challenger = subprocess.Popen(
+                child_command(args, "challenger", a_user, b_user, worker_log / "challenger", worker_root, worker_battles),
+                cwd=REPO_ROOT,
+            )
+            worker_processes.append((worker + 1, "challenger", challenger))
+
+        failures = []
+        for worker_id, role, process in worker_processes:
+            code = process.wait()
+            if code != 0:
+                failures.append(f"worker {worker_id} {role} exited {code}")
+        if failures:
+            raise SystemExit("Curriculum self-play failed: " + "; ".join(failures))
     finally:
-        if challenger is not None and challenger.poll() is None:
-            challenger.terminate()
-            challenger.wait(timeout=15)
-        if acceptor.poll() is None:
-            acceptor.terminate()
-            acceptor.wait(timeout=15)
-    if code != 0 or acceptor.returncode != 0:
-        raise SystemExit(f"Curriculum self-play failed: challenger={code}, acceptor={acceptor.returncode}")
+        for _, _, process in worker_processes:
+            if process.poll() is None:
+                process.terminate()
+        for _, _, process in worker_processes:
+            if process.poll() is None:
+                try:
+                    process.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    process.kill()
 
 
 if __name__ == "__main__":
