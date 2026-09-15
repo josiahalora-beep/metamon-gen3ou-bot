@@ -22,12 +22,10 @@ def install_public_ladder_hardening() -> None:
     original_handle_message = PSClient._handle_message
 
     async def public_search_ladder_game(self, format_: str, packed_team: str | None):
-        # Preserve Showdown's normal account queue/privacy configuration.
-        # The user can use hidden or invite-only battles and view them from
-        # the logged-in account. Do not forcibly change /hidenext or
-        # /inviteonlynext here.
-        await self.set_team(packed_team)
-        await self.send_message(f"/search {format_}")
+        # Preserve Showdown's normal privacy behavior. The authenticated
+        # account may intentionally use hidden/invite-only battles; the bot
+        # should not force /hidenext or /inviteonlynext on or off.
+        return await original_search_ladder_game(self, format_, packed_team)
 
     async def resilient_handle_message(self, message: str):
         try:
