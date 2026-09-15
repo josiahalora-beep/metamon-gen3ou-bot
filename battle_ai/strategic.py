@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .damage import calculate_damage, type_multiplier
+from metamon.interface import consistent_pokemon_order
 
 
 _STATUS_HAZARD = {"tox", "psn", "brn", "poison", "burn"}
@@ -34,12 +35,23 @@ def _revealed_damaging_moves(pokemon: Any) -> list[Any]:
 
 
 def _team_pokemon_for_action(battle: Any, action: int) -> Any | None:
+    """Resolve an action ID using Metamon's canonical Pokémon ordering.
+
+    This must match TacticalEvaluator's switch-slot ordering exactly.  Never
+    independently sort by ``name``/``species`` here: formes and normalized
+    names are handled by ``consistent_pokemon_order``.
+    """
     if action < 4:
         return None
     switch_index = action - 4
-    team = [p for p in (getattr(battle, "team", {}) or {}).values()
-            if not getattr(p, "fainted", False) and not getattr(p, "active", False)]
-    team.sort(key=lambda p: str(getattr(p, "name", getattr(p, "species", ""))))
+    team = [
+        p for p in (getattr(battle, "team", {}) or {}).values()
+        if not getattr(p, "fainted", False) and not getattr(p, "active", False)
+    ]
+    try:
+        team = consistent_pokemon_order(team)
+    except ValueError:
+        return None
     return team[switch_index] if 0 <= switch_index < len(team) else None
 
 
@@ -89,7 +101,7 @@ def incoming_type_profile(opponent: Any, defender: Any) -> dict:
         "min_multiplier": min(multipliers),
         "super_effective": any(m >= 2.0 for m in multipliers),
         "immune": any(m == 0.0 for m in multipliers),
-        "moves": [_move_id(move) for move in moves],
+        "moves": [_move_id(m) for m in moves],
     }
 
 
@@ -223,8 +235,6 @@ def safety_override(battle: Any, legal_actions: list[int], model_action: int) ->
                                 f"use {getattr(best_move, 'name', getattr(best_move, 'id', 'attack'))} "
                                 f"({result.percentage_max:.0f}% estimated max damage)"), hard=True)
 
-    # 4) Do not knowingly spend a passive turn against a revealed stall core
-    # when the opponent is already in KO range of a reliable attack.
     opponent_hp = _current_hp_fraction(opponent)
     revealed_ids = {_move_id(m) for m in _revealed_moves(opponent)}
     has_stall_tools = bool(revealed_ids & _RECOVERY_OR_STALL)
