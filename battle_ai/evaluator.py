@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .damage import calculate_damage
-from .snapshot import snapshot_battle
+from .state import snapshot_battle
 from .strategic import safety_override
 from .strategic_plan import strategic_opportunity_override
 from metamon.interface import consistent_move_order, consistent_pokemon_order
@@ -54,20 +54,12 @@ class TacticalEvaluator:
     def _protect_sequence_breaker(self, active: Any, target: Any, move_slots: list[Any],
                                   evaluations: list[ActionEvaluation], model_action: int,
                                   weather: str = "") -> tuple[int | None, str]:
-        """Avoid knowingly spending another Gen 3 protection-streak roll.
-
-        The important distinction is between a *selected* Protect and a
-        *successful* Protect. poke-env tracks the latter in _protect_counter,
-        and that is what determines the next success probability. Therefore
-        this does not punish a failed Protect, and it does not assume every
-        selected Protect actually raised the streak counter.
-        """
+        """Avoid knowingly spending another Gen 3 protection-streak roll."""
         if not (0 <= model_action < 4) or model_action >= len(move_slots):
             return None, ""
         selected = move_slots[model_action]
         if selected is None or not self._is_protect_counter_move(selected):
             return None, ""
-
         counter = self._protect_counter(active)
         if counter <= 0:
             return None, ""
@@ -85,7 +77,6 @@ class TacticalEvaluator:
             if not result.reliable:
                 continue
             candidates.append((result.ko_probability, result.max_damage, -evaluation.action, evaluation.action, move))
-
         if not candidates:
             return None, ""
 
@@ -144,11 +135,7 @@ class TacticalEvaluator:
         safety_action = None
 
         sequence_action, sequence_reason = self._protect_sequence_breaker(
-            active,
-            target,
-            move_slots,
-            evaluations,
-            chosen,
+            active, target, move_slots, evaluations, chosen,
             weather=(state.weather[0] if state.weather else ""),
         )
         if sequence_action is not None and sequence_action in legal_set and sequence_action != chosen:
@@ -196,8 +183,6 @@ class TacticalEvaluator:
                         )
                         break
 
-        # Reranking may optimize among ordinary actions, but it must never
-        # undo a hard anti-throw or strategic correction.
         if self.override_mode == "rerank" and safety_action is None:
             best = max(evaluations, key=lambda x: x.tactical_score) if evaluations else None
             if best is not None and best.kind == "move" and best.tactical_score > -1e8:
