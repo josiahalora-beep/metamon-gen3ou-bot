@@ -31,62 +31,71 @@ class TacticalEvaluator:
         self.switch_penalty = switch_penalty
         self.anti_throw_penalty = anti_throw_penalty
         self.override_mode = override_mode
-        self._history_battle_tag = None
-        self._consecutive_passive_action = None
-        self._consecutive_passive_count = 0
 
     @staticmethod
     def _is_passive_move(move: Any) -> bool:
-        """Moves that do not directly pressure the opponent this turn."""
+        """Moves that do not directly deal damage this turn."""
         return int(getattr(move, "base_power", 0) or 0) <= 0
 
-    def _note_model_action(self, battle: Any, model_action: int, move_slots: list[Any]) -> None:
-        """Track repeated passive choices for one battle without leaking across episodes."""
-        tag = str(getattr(battle, "battle_tag", ""))
-        if tag != self._history_battle_tag:
-            self._history_battle_tag = tag
-            self._consecutive_passive_action = None
-            self._consecutive_passive_count = 0
-        move = move_slots[model_action] if 0 <= model_action < len(move_slots) else None
-        if move is not None and self._is_passive_move(move):
-            if self._consecutive_passive_action == model_action:
-                self._consecutive_passive_count += 1
-            else:
-                self._consecutive_passive_action = model_action
-                self._consecutive_passive_count = 1
-        else:
-            self._consecutive_passive_action = None
-            self._consecutive_passive_count = 0
+    @staticmethod
+    def _is_protect_counter_move(move: Any) -> bool:
+        """Protect/Detect/Endure-style moves sharing Gen 3's streak counter."""
+        return bool(getattr(move, "is_protect_counter", False))
 
-    def _passive_loop_breaker(self, active: Any, target: Any, legal_actions: list[int],
-                              move_slots: list[Any], evaluations: list[ActionEvaluation],
-                              model_action: int) -> tuple[int | None, str]:
-        """Break repeated Protect/setup/stall loops before the Pokemon is slowly lost."""
-        if self._consecutive_passive_count < 2 or not (0 <= model_action < 4):
+    @staticmethod
+    def _protect_counter(active: Any) -> int:
+        """Consecutive successful Protect/Detect/Endure uses tracked by poke-env."""
+        try:
+            return max(0, int(getattr(active, "_protect_counter", 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _protect_sequence_breaker(self, active: Any, target: Any, move_slots: list[Any],
+                                  evaluations: list[ActionEvaluation], model_action: int,
+                                  weather: str = "") -> tuple[int | None, str]:
+        """Avoid knowingly spending another Gen 3 protection-streak roll.
+
+        The important distinction is between a *selected* Protect and a
+        *successful* Protect. poke-env tracks the latter in _protect_counter,
+        and that is what determines the next success probability. Therefore
+        this does not punish a failed Protect, and it does not assume every
+        selected Protect actually raised the streak counter.
+        """
+        if not (0 <= model_action < 4) or model_action >= len(move_slots):
             return None, ""
-        selected = move_slots[model_action] if model_action < len(move_slots) else None
-        if selected is None or not self._is_passive_move(selected):
+        selected = move_slots[model_action]
+        if selected is None or not self._is_protect_counter_move(selected):
+            return None, ""
+
+        counter = self._protect_counter(active)
+        if counter <= 0:
             return None, ""
 
         candidates = []
         for evaluation in evaluations:
             if evaluation.kind != "move" or evaluation.action == model_action:
                 continue
-            move = move_slots[evaluation.action] if evaluation.action < len(move_slots) else None
+            if not (0 <= evaluation.action < len(move_slots)):
+                continue
+            move = move_slots[evaluation.action]
             if move is None or self._is_passive_move(move):
                 continue
-            result = calculate_damage(active, target, move, weather="")
+            result = calculate_damage(active, target, move, weather=weather)
             if not result.reliable:
                 continue
             candidates.append((result.ko_probability, result.max_damage, -evaluation.action, evaluation.action, move))
 
         if not candidates:
             return None, ""
+
         _, _, _, action, move = max(candidates)
         move_name = getattr(move, "name", getattr(move, "id", "attack"))
+        success_denominator = 2 ** counter
+        success_probability = 1.0 / success_denominator
         return action, (
-            f"passive-loop breaker: {getattr(selected, 'name', getattr(selected, 'id', 'passive'))} "
-            f"was selected {self._consecutive_passive_count} consecutive times; use {move_name} instead"
+            f"protect sequence breaker: {getattr(selected, 'name', getattr(selected, 'id', 'protect'))} "
+            f"has already succeeded {counter} consecutive time(s); next success is only "
+            f"{success_probability:.1%}; use {move_name} instead"
         )
 
     def evaluate(self, battle: Any, legal_actions: list[int], model_action: int) -> tuple[int, list[ActionEvaluation]]:
@@ -98,7 +107,6 @@ class TacticalEvaluator:
             move_slots = consistent_move_order(raw_move_slots)
         except ValueError:
             move_slots = sorted(raw_move_slots, key=lambda m: str(getattr(m, "id", "")))
-        self._note_model_action(battle, int(model_action), move_slots)
         available_move_ids = {getattr(m, "id", "") for m in (getattr(battle, "available_moves", []) or [])}
         raw_switch_slots = [p for p in getattr(battle, "team", {}).values()
                             if not getattr(p, "fainted", False) and not getattr(p, "active", False)]
@@ -135,19 +143,24 @@ class TacticalEvaluator:
         chosen = int(model_action) if int(model_action) in legal_set else (min(legal_set) if legal_set else 0)
         safety_action = None
 
-        loop_action, loop_reason = self._passive_loop_breaker(
-            active, target, legal_actions, move_slots, evaluations, chosen
+        sequence_action, sequence_reason = self._protect_sequence_breaker(
+            active,
+            target,
+            move_slots,
+            evaluations,
+            chosen,
+            weather=(state.weather[0] if state.weather else ""),
         )
-        if loop_action is not None and loop_action in legal_set:
-            chosen = loop_action
-            safety_action = loop_action
+        if sequence_action is not None and sequence_action in legal_set and sequence_action != chosen:
+            chosen = sequence_action
+            safety_action = sequence_action
             for i, evaluation in enumerate(evaluations):
                 if evaluation.action == chosen:
                     evaluations[i] = ActionEvaluation(
                         evaluation.action, evaluation.kind, evaluation.label,
                         evaluation.tactical_score + self.anti_throw_penalty,
                         evaluation.ko_probability,
-                        evaluation.reason + " | " + loop_reason,
+                        evaluation.reason + " | " + sequence_reason,
                     )
                     break
 
