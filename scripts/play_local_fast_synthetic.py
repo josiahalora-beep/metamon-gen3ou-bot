@@ -8,6 +8,14 @@ policy/evaluator path can be stress-tested locally without touching live ladder 
 from __future__ import annotations
 
 import asyncio
+import sys
+from pathlib import Path
+
+# This script is executed from scripts/, so Python otherwise cannot import the
+# repository-root module play_public_synthetic.py.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import play_public_synthetic as runner
 from poke_env.ps_client.server_configuration import ServerConfiguration
