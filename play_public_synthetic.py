@@ -1,6 +1,7 @@
 ﻿import argparse
 import asyncio
 import functools
+import getpass
 import json
 import threading
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ from battle_ai import BattleLogger, TacticalEvaluator, snapshot_battle
 
 PUBLIC_SERVER = ServerConfiguration(
     "wss://sim3.psim.us/showdown/websocket",
-    "https://play.pokemonshowdown.com/action.php?",
+    "https://play.pokemonshowdown.com/api/login",
 )
 
 
@@ -194,8 +195,6 @@ class PublicQueueOnLadder(QueueOnLocalLadder):
             battle_started = False
             while not task.done():
                 current = getattr(self.agent, "current_battle", None)
-                # Once Showdown has assigned a live battle, never cancel or
-                # retry this task: battle duration is independent of queue time.
                 if current is not None and not getattr(current, "finished", True):
                     battle_started = True
                     tag = str(getattr(current, "battle_tag", ""))
@@ -220,25 +219,16 @@ class PublicQueueOnLadder(QueueOnLocalLadder):
                 self._trace("lifecycle.queue_timeout")
                 print("[public ladder] matchmaking search timed out; retrying", flush=True)
                 continue
-            # The installed poke-env ladder coroutine can remain pending after
-            # the battle has already been delivered to OpenAIGymEnv. Drive the
-            # episode from the battle state, then release that stale waiter.
             while not self._battle_done.is_set():
                 await asyncio.sleep(1)
             if not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-            # poke-env retains finished battles in its registry.  Starting the
-            # next ladder coroutine before clearing that registry can make the
-            # next environment reset act on the old room ("Battle is already
-            # finished") and leave the sequential evaluator waiting forever.
             try:
                 self._session.cleanup_started()
                 self._trace("lifecycle.cleanup_started", self._session.battle_tag)
                 self.agent.reset_battles()
             except EnvironmentError:
-                # A genuinely live battle must never be discarded.  The loop
-                # will retry only after poke-env reports it finished.
                 await asyncio.sleep(1)
                 self.agent.reset_battles()
             self._session.cleanup_finished()
@@ -402,8 +392,6 @@ class PublicQueueOnLadder(QueueOnLocalLadder):
         )
         if self.battle_ai is not None:
             state = snapshot_battle(battle)
-            # PokeEnvWrapper has already computed this using the installed
-            # UniversalState/action-space implementation before action_to_move.
             legal = list(self._most_recent_legal_actions)
             final_action, evaluations = self.battle_ai.evaluate(battle, legal, model_action)
             candidates = [e.__dict__ for e in evaluations]
@@ -504,7 +492,7 @@ def make_public_ladder_env(
         player_username=player_username,
         player_password=player_password,
         player_team_set=player_team_set,
-        battle_backend="poke-env",
+        battle_backend="metamon",
         battle_ai=battle_ai,
         battle_logger=battle_logger,
         decision_debug=decision_debug,
@@ -519,7 +507,7 @@ async def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--username", required=True)
-    parser.add_argument("--password", required=True)
+    parser.add_argument("--password", default=None)
 
     parser.add_argument(
         "--team_dir",
@@ -555,6 +543,8 @@ async def main():
     parser.add_argument("--transport-stall-seconds", type=float, default=60.0)
 
     args = parser.parse_args()
+    if args.password is None:
+        args.password = getpass.getpass("Password: ")
 
     battle_format = "gen3ou"
     team_dir = Path(args.team_dir_alias or args.team_dir)
