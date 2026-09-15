@@ -12,6 +12,7 @@ import functools
 import json
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,7 +46,7 @@ class LocalSyntheticChallenge(ChallengeByUsername):
         self.transport_stall_seconds = transport_stall_seconds
         self._last_transport_progress = datetime.now(timezone.utc)
         self._stall_reported_for = None
-        self._battle_done = __import__("threading").Event()
+        self._battle_done = threading.Event()
         self._session = runner.BattleSessionState()
         super().__init__(*args, **kwargs)
         self._install_transport_trace_hooks()
@@ -54,10 +55,6 @@ class LocalSyntheticChallenge(ChallengeByUsername):
     def server_configuration(self):
         return LOCAL_SERVER
 
-    # Reuse the hardened action conversion, transport hooks, and battle logging
-    # already used by the public runner. The only thing changed is matchmaking:
-    # ChallengeByUsername sends/accepts a named local challenge instead of laddering.
-    action_to_move = runner.PublicQueueOnLadder.action_to_move
     _install_transport_trace_hooks = runner.PublicQueueOnLadder._install_transport_trace_hooks
     _trace = runner.PublicQueueOnLadder._trace
     _touch_transport_progress = runner.PublicQueueOnLadder._touch_transport_progress
@@ -83,6 +80,76 @@ class LocalSyntheticChallenge(ChallengeByUsername):
     @staticmethod
     def _battle_tag(battle):
         return str(getattr(battle, "battle_tag", ""))
+
+    def action_to_move(self, action, battle):
+        tag = self._battle_tag(battle)
+        if battle is None or battle is not self.current_battle or getattr(battle, "finished", False):
+            raise RuntimeError(f"refusing action for stale or finished battle {tag}")
+        if self._session.battle_tag != tag:
+            raise RuntimeError(f"refusing action for stale battle {tag}; active={self._session.battle_tag}")
+        self._session.turn_received(tag)
+        model_action = int(action)
+        final_action = model_action
+        candidates = []
+        reasoning = {}
+        self._trace(
+            "action.model_selected",
+            tag,
+            model_action=model_action,
+            legal_actions=list(getattr(self, "_most_recent_legal_actions", [])),
+            state=runner.TransportTraceWriter.compact_battle_state(battle),
+        )
+        if self.battle_ai is not None:
+            state = runner.snapshot_battle(battle)
+            legal = list(self._most_recent_legal_actions)
+            final_action, evaluations = self.battle_ai.evaluate(battle, legal, model_action)
+            candidates = [e.__dict__ for e in evaluations]
+            from battle_ai.insights import position_metadata
+            reasoning = {
+                "model_action": model_action,
+                "selected": final_action,
+                "turn": state.turn,
+                "format": state.format,
+                "position": position_metadata(state),
+            }
+            if self.decision_debug:
+                print(f"\nTURN {state.turn}")
+                print(f"OUR: {state.our_active.get('name')} HP {state.our_active.get('hp_fraction', 0.0):.1%} status={state.our_active.get('status')} boosts={state.our_active.get('boosts')}")
+                print(f"OPPONENT: {state.opponent_active.get('name')} HP {state.opponent_active.get('hp_fraction', 0.0):.1%} status={state.opponent_active.get('status')} boosts={state.opponent_active.get('boosts')}")
+                print(f"LEGAL ACTIONS: {legal}")
+                print(f"SYNTHETICRLV2: selected={model_action}")
+                for evaluation in evaluations:
+                    print(f"  {evaluation.action}: {evaluation.label} kind={evaluation.kind} score={evaluation.tactical_score:.3f} KO={evaluation.ko_probability:.0%} | {evaluation.reason}")
+                print(f"FINAL: {final_action} ({'model preserved' if final_action == model_action else 'verifier override'})")
+            if self.battle_logger is not None:
+                self.battle_logger.start(
+                    state.battle_id,
+                    username=state.player,
+                    opponent=state.opponent,
+                    format=state.format,
+                    team_file=str(getattr(self.metamon_team_set, "most_recent_team_file", "")),
+                )
+                self.battle_logger.turn(
+                    state.battle_id, state.turn, state.to_dict(),
+                    candidates, model_action, final_action, reasoning,
+                )
+        self._trace(
+            "action.final_selected",
+            tag,
+            model_action=model_action,
+            final_action=final_action,
+            override=final_action != model_action,
+        )
+        order = super().action_to_move(final_action, battle)
+        self._trace(
+            "action.converted_to_order",
+            tag,
+            final_action=final_action,
+            order_type=type(order).__name__,
+            command=runner.TransportTraceWriter.redact_text(getattr(order, "message", "")),
+            state=runner.TransportTraceWriter.compact_battle_state(battle),
+        )
+        return order
 
     def step(self, action):
         self._trace(
@@ -288,20 +355,19 @@ async def main():
         child_command(args, "acceptor", acceptor, challenger, acceptor_dir),
         cwd=REPO_ROOT,
     )
+    challenger_code = 1
+    challenger_proc = None
     try:
-        # Give the acceptor time to connect and register before challenges are sent.
         time.sleep(3.0)
         challenger_proc = subprocess.Popen(
             child_command(args, "challenger", challenger, acceptor, challenger_dir),
             cwd=REPO_ROOT,
         )
-        try:
-            challenger_code = challenger_proc.wait()
-        finally:
-            if challenger_proc.poll() is None:
-                challenger_proc.terminate()
-                challenger_proc.wait(timeout=10)
+        challenger_code = challenger_proc.wait()
     finally:
+        if challenger_proc is not None and challenger_proc.poll() is None:
+            challenger_proc.terminate()
+            challenger_proc.wait(timeout=10)
         if acceptor_proc.poll() is None:
             acceptor_proc.terminate()
             acceptor_proc.wait(timeout=10)
