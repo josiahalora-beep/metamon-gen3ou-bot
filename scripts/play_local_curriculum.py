@@ -37,8 +37,6 @@ import play_local_selfplay_synthetic_v2 as impl
 import play_public_synthetic as runner
 from metamon.rl.pretrained import LocalFinetunedModel
 
-LOCAL_SERVER = impl.LOCAL_SERVER
-
 
 def build_model(args):
     base = runner.get_pretrained_model("SyntheticRLV2")
@@ -78,7 +76,14 @@ def run_role(args, role, username, opponent_username, log_dir):
     tactical = None
     if args.enable_battle_ai:
         config_path = Path(args.config) if args.config else Path(__file__).parent / "battle_ai" / "config.yaml"
-        config = json.loads(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+        if config_path.exists():
+            try:
+                import yaml
+                config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            except ImportError:
+                config = json.loads(config_path.read_text(encoding="utf-8"))
+        else:
+            config = {}
         tactical = runner.TacticalEvaluator(**{
             k: config[k] for k in (
                 "model_weight", "damage_weight", "ko_weight", "switch_penalty",
@@ -178,6 +183,7 @@ async def main():
     challenger_dir = base_log / "selfplay_challenger"
     acceptor = subprocess.Popen(child_command(args, "acceptor", args.opponent_username, args.username, acceptor_dir), cwd=REPO_ROOT)
     challenger = None
+    code = 1
     try:
         time.sleep(3.0)
         challenger = subprocess.Popen(child_command(args, "challenger", args.username, args.opponent_username, challenger_dir), cwd=REPO_ROOT)
