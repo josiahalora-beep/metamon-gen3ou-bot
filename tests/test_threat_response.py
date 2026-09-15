@@ -60,8 +60,8 @@ class ThreatResponseTests(unittest.TestCase):
 
         action, reason = hidden_threat_switch_override(
             battle,
-            [1, 4],
-            1,
+            [0, 4],
+            0,
             {0: leech_seed, 1: psychic},
         )
 
