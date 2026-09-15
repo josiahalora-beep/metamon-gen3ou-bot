@@ -68,9 +68,8 @@ def calculate_damage(attacker: Any, defender: Any, move: Any, *, weather: str = 
         hp_known = int(hp_known) if hp_known is not None else 0
     except (TypeError, ValueError):
         hp_known = 0
-    hp_fraction = float(getattr(defender, "current_hp_fraction", 0.0) or 0.0)
     hp_estimate = hp_range_from_observation(defender)
-    placeholder_hp = hp_known <= 100 and hp_fraction > 0 and int(getattr(defender, "base_stats", {}).get("hp", 0) or 0) >= 150
+    placeholder_hp = hp_known == 100 and hp_estimate is not None
     if hp_known > 0 and not placeholder_hp:
         hp_range = (hp_known, hp_known)
     elif hp_estimate is not None:
@@ -121,17 +120,12 @@ def calculate_damage(attacker: Any, defender: Any, move: Any, *, weather: str = 
             damage = math.floor(damage / 2)
         return max(1, damage)
 
-    # Worst/best legal envelopes. For an unknown opponent, the range is meant
-    # to answer tactical questions without pretending we know its EV spread.
-    values = [one(atk, defense, roll) for atk in (atk_range[0], atk_range[1])
-              for defense in (def_range[0], def_range[1])
+    values = [one(atk, defense, roll) for atk in (atk_lo, atk_hi)
+              for defense in (def_lo, def_hi)
               for roll in range(217, 256)]
     min_damage = min(values)
     max_damage = max(values)
     hp_lo, hp_hi = hp_range
-    # KO probability is deliberately conservative for estimated HP/stat data:
-    # 1 only when every legal envelope member KOs, otherwise 0. Known data keeps
-    # the exact random-roll probability.
     estimated = atk_range[0] != atk_range[1] or def_range[0] != def_range[1] or hp_lo != hp_hi
     if estimated:
         ko_probability = 1.0 if min_damage >= hp_hi else 0.0
