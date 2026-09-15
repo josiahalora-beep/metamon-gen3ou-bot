@@ -42,7 +42,7 @@ try {
     # matchmaking involved. Keep the sentinel for compatibility with older local
     # runner invocations; the self-play runner itself does not authenticate.
     $Args = @(
-        'scripts\play_local_selfplay_synthetic.py',
+        'scripts\play_local_selfplay_synthetic_v2.py',
         '--username', $Username,
         '--opponent-username', $OpponentUsername,
         '--team-dir', $TeamDir,
