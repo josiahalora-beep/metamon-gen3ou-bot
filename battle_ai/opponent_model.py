@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from math import exp
 from typing import Any
 
-from .smogon_priors import infer_profile, likely_moves, load_profiles
+from .smogon_priors import likely_moves, load_profiles
 
 
 def _key(value: Any) -> str:
@@ -36,28 +35,44 @@ class PredictedResponse:
 @dataclass
 class _BehaviorState:
     switches: int = 0
-    switch_opportunities: int = 0
+    opportunities: int = 0
     attacks: int = 0
     setup_uses: int = 0
     protect_uses: int = 0
     passive_uses: int = 0
 
-    def smoothed_switch_rate(self) -> float:
-        return (self.switches + 1.5) / (self.switch_opportunities + 3.0)
+    @property
+    def observations(self) -> int:
+        return self.attacks + self.setup_uses + self.protect_uses + self.passive_uses
 
-    def smoothed_attack_rate(self) -> float:
-        total = self.attacks + self.setup_uses + self.protect_uses + self.passive_uses
-        return (self.attacks + 1.0) / (total + 2.0)
+    def switch_rate(self) -> float:
+        # Conservative Beta-style prior: 2/10 switch tendency before evidence.
+        return (self.switches + 2.0) / (self.opportunities + 10.0)
+
+    def attack_rate(self) -> float:
+        return (self.attacks + 4.0) / (self.observations + 8.0)
 
 
 class OpponentModel:
-    """Per-battle Bayesian behavior model layered over population priors.
+    """Visible-information Bayesian opponent model for Gen 3 OU.
 
-    Population beliefs come from the Gen 3 set corpus. In-match behavior is
-    updated with Laplace-smoothed evidence so three observations cannot
-    overwhelm the population prior. State is keyed by battle id and naturally
-    re-evaluated every turn.
+    Population evidence comes from the Gen 3 set corpus. Match-specific
+    behavior is updated only when the observed state changes, preventing the
+    same turn from being counted repeatedly. Unknown information stays unknown.
     """
+
+    _MOVE_TYPES = {
+        "surf": "water", "hydropump": "water", "icebeam": "ice", "thunderbolt": "electric",
+        "thunder": "electric", "psychic": "psychic", "fireblast": "fire", "flamethrower": "fire",
+        "gigadrain": "grass", "leafstorm": "grass", "energyball": "grass", "earthquake": "ground",
+        "rockslide": "rock", "bodyslam": "normal", "return": "normal", "doubleedge": "normal",
+        "brickbreak": "fighting", "focuspunch": "fighting", "sludgebomb": "poison", "drillpeck": "flying",
+        "hiddenpower": "normal", "crunch": "dark", "meteormash": "steel", "meteor_mash": "steel",
+    }
+
+    _SETUP = {"swordsdance", "dragondance", "calmmind", "curse", "agility", "rockpolish", "bellydrum", "growth", "amnesia", "irondefense"}
+    _PASSIVE = {"toxic", "thunderwave", "willowisp", "leechseed", "roar", "whirlwind", "haze", "spikes", "rapidspin"}
+    _PROTECT = {"protect", "detect", "endure"}
 
     def __init__(self, *, prior_strength: float = 8.0):
         self.prior_strength = float(prior_strength)
@@ -68,6 +83,21 @@ class OpponentModel:
         self._behavior.pop(str(battle_id), None)
         self._previous.pop(str(battle_id), None)
 
+    @classmethod
+    def move_type(cls, move_id: str) -> str:
+        return cls._MOVE_TYPES.get(_key(move_id), "")
+
+    @staticmethod
+    def _move_class(move: str) -> str:
+        move = _key(move)
+        if move in OpponentModel._PROTECT:
+            return "protect"
+        if move in OpponentModel._SETUP:
+            return "setup"
+        if move in OpponentModel._PASSIVE:
+            return "passive"
+        return "attack"
+
     def observe_transition(self, battle: Any) -> None:
         battle_id = str(getattr(battle, "battle_tag", "unknown"))
         active = getattr(battle, "opponent_active_pokemon", None)
@@ -76,35 +106,30 @@ class OpponentModel:
         current_species = _species(active)
         current_moves = _revealed_moves(active)
         hp_fraction = float(getattr(active, "current_hp_fraction", 1.0) or 1.0)
+        current = (current_species, current_moves, round(hp_fraction, 3))
         previous = self._previous.get(battle_id)
-        if previous is None:
-            self._previous[battle_id] = (current_species, current_moves, hp_fraction)
+        if previous == current:
             return
-
-        previous_species, previous_moves, previous_hp = previous
         state = self._behavior[battle_id]
-        state.switch_opportunities += 1
-        if current_species != previous_species:
-            state.switches += 1
-        else:
-            new_moves = set(current_moves) - set(previous_moves)
-            if new_moves:
-                for move in new_moves:
-                    if move in {"protect", "detect", "endure"}:
+        if previous is not None:
+            previous_species, previous_moves, previous_hp = previous
+            state.opportunities += 1
+            if current_species != previous_species:
+                state.switches += 1
+            else:
+                newly_revealed = set(current_moves) - set(previous_moves)
+                for move in newly_revealed:
+                    if move in self._PROTECT:
                         state.protect_uses += 1
-                    elif move in {
-                        "swordsdance", "dragondance", "calmmind", "curse", "agility",
-                        "rockpolish", "bellydrum", "growth", "amnesia", "irondefense",
-                    }:
+                    elif move in self._SETUP:
                         state.setup_uses += 1
-                    elif move in {"leechseed", "toxic", "thunderwave", "willowisp", "roar", "whirlwind", "haze", "spikes"}:
+                    elif move in self._PASSIVE:
                         state.passive_uses += 1
                     else:
                         state.attacks += 1
-            elif hp_fraction < previous_hp - 0.01:
-                state.attacks += 1
-
-        self._previous[battle_id] = (current_species, current_moves, hp_fraction)
+                # HP loss alone is not treated as an attack: residual damage,
+                # poison, weather, recoil and hazards are all possible causes.
+        self._previous[battle_id] = current
 
     def _profile_move_prior(self, pokemon: Any) -> dict[str, float]:
         species = str(getattr(pokemon, "species", getattr(pokemon, "name", "")))
@@ -112,37 +137,59 @@ class OpponentModel:
         profiles = load_profiles(species, revealed_moves=observed)
         weights: dict[str, float] = defaultdict(float)
         if profiles:
-            total = sum(max(0.0, p.weight) for p in profiles)
-            for profile in profiles[:12]:
-                share = max(0.0, profile.weight) / max(total, 1e-9)
+            profile_weights = [max(0.0, p.weight) for p in profiles[:12]]
+            total = sum(profile_weights)
+            for profile, profile_weight in zip(profiles[:12], profile_weights):
+                share = profile_weight / max(total, 1e-9)
                 for move in profile.moves:
                     weights[_key(move)] += share / max(1, len(profile.moves))
         else:
-            moves = likely_moves(pokemon, limit=8)
-            if moves:
-                for index, move in enumerate(moves):
-                    weights[_key(move)] = 1.0 / (index + 1)
-
+            for index, move in enumerate(likely_moves(pokemon, limit=8)):
+                weights[_key(move)] += 1.0 / (index + 1)
         for move in observed:
-            weights[move] = max(weights.get(move, 0.0), 0.35)
+            weights[move] = max(weights.get(move, 0.0), 0.50)
         total = sum(weights.values())
-        if total <= 0:
-            return {}
-        return {move: value / total for move, value in weights.items()}
+        return {move: value / total for move, value in weights.items()} if total > 0 else {}
 
     @staticmethod
-    def _move_class(move: str) -> str:
-        move = _key(move)
-        if move in {"protect", "detect", "endure"}:
-            return "protect"
-        if move in {
-            "swordsdance", "dragondance", "calmmind", "curse", "agility",
-            "rockpolish", "bellydrum", "growth", "amnesia", "irondefense",
-        }:
-            return "setup"
-        if move in {"toxic", "thunderwave", "willowisp", "leechseed", "roar", "whirlwind", "haze", "spikes", "rapidspin"}:
-            return "passive"
-        return "attack"
+    def _effectiveness(move_type: str, defender_types: set[str]) -> float:
+        chart = {
+            "fire": {"grass": 2, "ice": 2, "bug": 2, "steel": 2, "fire": .5, "water": .5, "rock": .5, "dragon": .5},
+            "water": {"fire": 2, "ground": 2, "rock": 2, "water": .5, "grass": .5, "dragon": .5},
+            "electric": {"water": 2, "flying": 2, "electric": .5, "grass": .5, "dragon": .5, "ground": 0},
+            "grass": {"water": 2, "ground": 2, "rock": 2, "fire": .5, "grass": .5, "poison": .5, "flying": .5, "bug": .5, "dragon": .5, "steel": .5},
+            "ice": {"grass": 2, "ground": 2, "flying": 2, "dragon": 2, "fire": .5, "water": .5, "ice": .5, "steel": .5},
+            "fighting": {"normal": 2, "ice": 2, "rock": 2, "dark": 2, "steel": 2, "poison": .5, "flying": .5, "psychic": .5, "bug": .5, "ghost": 0},
+            "ground": {"fire": 2, "electric": 2, "poison": 2, "rock": 2, "steel": 2, "grass": .5, "bug": .5, "flying": 0},
+            "psychic": {"fighting": 2, "poison": 2, "steel": .5, "psychic": .5, "dark": 0},
+            "rock": {"fire": 2, "ice": 2, "flying": 2, "bug": 2, "fighting": .5, "ground": .5, "steel": .5},
+            "flying": {"grass": 2, "fighting": 2, "bug": 2, "electric": .5, "rock": .5, "steel": .5},
+            "dark": {"psychic": 2, "ghost": 2, "fighting": .5, "dark": .5, "steel": .5},
+            "ghost": {"ghost": 2, "psychic": 2, "dark": .5, "normal": 0},
+            "steel": {"ice": 2, "rock": 2, "fire": .5, "water": .5, "electric": .5, "steel": .5},
+            "poison": {"grass": 2, "poison": .5, "ground": .5, "rock": .5, "ghost": .5, "steel": 0},
+        }
+        result = 1.0
+        for defender_type in defender_types:
+            result *= chart.get(move_type, {}).get(defender_type, 1.0)
+        return result
+
+    def _switch_probability(self, battle: Any, behavior: _BehaviorState) -> float:
+        opponent = getattr(battle, "opponent_active_pokemon", None)
+        our_active = getattr(battle, "active_pokemon", None)
+        prior = 0.18
+        if opponent is not None and float(getattr(opponent, "current_hp_fraction", 1.0) or 1.0) <= 0.30:
+            prior += 0.10
+        if opponent is not None and our_active is not None:
+            opp_types = {_key(t) for t in (getattr(opponent, "types", ()) or ())}
+            our_types = {_key(t) for t in (getattr(our_active, "types", ()) or ())}
+            # Type pressure is only a weak prior; it never creates certainty.
+            if {"ground", "rock", "flying", "water", "fire", "ice", "fighting"} & our_types and opp_types & {"fire", "ice", "bug", "steel", "rock", "water", "ground"}:
+                prior += 0.04
+        behavioral = behavior.switch_rate()
+        n = min(behavior.opportunities, 12)
+        probability = (prior * self.prior_strength + behavioral * n) / (self.prior_strength + n)
+        return min(0.55, max(0.10, probability))
 
     def predict_responses(self, battle: Any, *, max_switches: int = 3, max_moves: int = 4) -> list[PredictedResponse]:
         self.observe_transition(battle)
@@ -154,75 +201,47 @@ class OpponentModel:
         move_prior = self._profile_move_prior(opponent)
         responses: list[PredictedResponse] = []
 
-        # Population prior: switches are conditional on the current species
-        # and our active matchup. A weak/negative matchup increases the prior,
-        # but behavioral evidence receives only a bounded Bayesian update.
-        switch_prior = 0.18
-        our_active = getattr(battle, "active_pokemon", None)
-        if our_active is not None:
-            our_types = {_key(t) for t in (getattr(our_active, "types", ()) or ())}
-            opp_types = {_key(t) for t in (getattr(opponent, "types", ()) or ())}
-            if our_types & {"electric", "ice", "fighting", "ground", "psychic", "fire", "water"}:
-                if _base_stats(our_active).get("spa", 0) + _base_stats(our_active).get("atk", 0) > _base_stats(opponent).get("def", 0) + _base_stats(opponent).get("spd", 0):
-                    switch_prior += 0.08
-            if float(getattr(opponent, "current_hp_fraction", 1.0) or 1.0) < 0.30:
-                switch_prior += 0.10
-        behavioral_switch = behavior.smoothed_switch_rate()
-        switch_prob = (switch_prior * self.prior_strength + behavioral_switch * max(1, behavior.switch_opportunities)) / (self.prior_strength + max(1, behavior.switch_opportunities))
-        switch_prob = min(0.78, max(0.08, switch_prob))
-
-        teammate_pool = []
-        opponent_species = {_species(p) for p in (getattr(battle, "opponent_team", {}) or {}).values() if p is not None and not getattr(p, "fainted", False)}
+        switch_prob = self._switch_probability(battle, behavior)
+        candidates: list[tuple[float, Any]] = []
         for p in (getattr(battle, "opponent_team", {}) or {}).values():
-            if p is None or getattr(p, "fainted", False) or p is opponent:
+            if p is None or p is opponent or getattr(p, "fainted", False) or getattr(p, "active", False):
                 continue
-            name = _species(p)
-            if name in opponent_species:
-                teammate_pool.append(p)
-        scores = []
-        our_types = tuple(_key(t) for t in (getattr(our_active, "types", ()) or ())) if our_active is not None else ()
-        super_effective = {"fire": {"grass", "ice", "bug", "steel"}, "water": {"fire", "ground", "rock"}, "electric": {"water", "flying"}, "ice": {"grass", "ground", "flying", "dragon"}, "fighting": {"normal", "ice", "rock", "dark", "steel"}, "ground": {"fire", "electric", "poison", "rock", "steel"}, "psychic": {"fighting", "poison"}, "rock": {"fire", "ice", "flying", "bug"}}
-        for p in teammate_pool:
-            score = 0.0
             p_types = {_key(t) for t in (getattr(p, "types", ()) or ())}
-            # Candidate is attractive when it resists at least one revealed
-            # move type or is faster/bulkier than the current active.
-            for move_type in move_prior:
-                if move_type in super_effective and p_types & super_effective[move_type]:
-                    score += 0.1
-            score += 0.5 * float(getattr(p, "current_hp_fraction", 1.0) or 1.0)
-            score += 0.002 * max(_base_stats(p).get("hp", 0), 0)
-            scores.append((score, p))
-        scores.sort(reverse=True, key=lambda x: x[0])
-        top_switches = scores[:max_switches]
-        if top_switches and switch_prob > 0:
-            denom = sum(max(0.001, score) for score, _ in top_switches)
+            score = 1.0 * float(getattr(p, "current_hp_fraction", 1.0) or 1.0)
+            resisted = 0.0
+            punished = 0.0
+            for move_id, move_prob in move_prior.items():
+                move_type = self.move_type(move_id)
+                if not move_type:
+                    continue
+                eff = self._effectiveness(move_type, p_types)
+                if eff < 1.0:
+                    resisted += move_prob * (1.0 - eff)
+                elif eff > 1.0:
+                    punished += move_prob * (eff - 1.0)
+            score += 1.2 * resisted - 0.6 * punished
+            candidates.append((max(0.05, score), p))
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        top_switches = candidates[:max_switches]
+        if top_switches:
+            denom = sum(score for score, _ in top_switches)
             for score, p in top_switches:
-                probability = switch_prob * max(0.001, score) / denom
-                responses.append(PredictedResponse("switch", probability, target=_species(p), rationale="population switch prior + smoothed in-battle tendency"))
+                probability = switch_prob * score / max(denom, 1e-9)
+                responses.append(PredictedResponse("switch", probability, target=_species(p), rationale="bounded switch prior + set-based matchup posterior"))
 
-        remaining_prob = max(0.0, 1.0 - switch_prob)
-        attack_candidates = []
-        for move, prob in sorted(move_prior.items(), key=lambda kv: kv[1], reverse=True):
-            attack_candidates.append((move, prob))
-        attack_candidates = attack_candidates[:max_moves]
-        if attack_candidates:
-            total = sum(prob for _, prob in attack_candidates)
-            attack_mass = 0.0
-            class_mass = defaultdict(float)
-            for move, prob in attack_candidates:
-                class_mass[self._move_class(move)] += prob / max(total, 1e-9)
-            behavior_attack = behavior.smoothed_attack_rate()
-            for move, prob in attack_candidates:
-                move_share = prob / max(total, 1e-9)
-                adjusted = remaining_prob * (0.65 * move_share + 0.35 * behavior_attack * move_share)
-                responses.append(PredictedResponse(self._move_class(move), adjusted, move=move, rationale="Smogon set prior + revealed moves + Bayesian behavior smoothing"))
+        remaining = max(0.0, 1.0 - switch_prob)
+        attacks = sorted(move_prior.items(), key=lambda kv: kv[1], reverse=True)[:max_moves]
+        if attacks:
+            total = sum(prob for _, prob in attacks)
+            behavior_attack = behavior.attack_rate()
+            for move, prob in attacks:
+                share = prob / max(total, 1e-9)
+                adjusted = remaining * (0.75 * share + 0.25 * behavior_attack * share)
+                responses.append(PredictedResponse(self._move_class(move), adjusted, move=move, rationale="Gen 3 set posterior + revealed moves + smoothed behavior"))
 
-        # Ensure predictions approximately sum to one without fabricating a
-        # specific hidden move. Residual uncertainty is represented explicitly.
         total = sum(max(0.0, r.probability) for r in responses)
-        if total < 0.999:
+        if total < 0.995:
             responses.append(PredictedResponse("unknown", 1.0 - total, rationale="unresolved hidden-information mass"))
-        elif total > 1.001:
+        elif total > 1.005:
             responses = [PredictedResponse(r.kind, r.probability / total, r.target, r.move, r.rationale) for r in responses]
         return responses
