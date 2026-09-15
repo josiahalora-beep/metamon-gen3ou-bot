@@ -24,7 +24,7 @@ class ActionEvaluation:
 
 
 class TacticalEvaluator:
-    """Conservative Gen 3 verifier/reranker with predictive response search."""
+    """Conservative Gen 3 verifier/reranker with safety-first ordering."""
 
     def __init__(self, *, model_weight=1.0, damage_weight=0.35, ko_weight=2.0,
                  switch_penalty=0.15, anti_throw_penalty=2.0,
@@ -68,9 +68,7 @@ class TacticalEvaluator:
         for evaluation in evaluations:
             if evaluation.kind != "move" or evaluation.action == model_action:
                 continue
-            if not (0 <= evaluation.action < len(move_slots)):
-                continue
-            move = move_slots[evaluation.action]
+            move = move_slots[evaluation.action] if evaluation.action < len(move_slots) else None
             if move is None or self._is_passive_move(move):
                 continue
             result = calculate_damage(active, target, move, weather=weather)
@@ -88,6 +86,17 @@ class TacticalEvaluator:
             f"{success_probability:.1%}; use {move_name} instead"
         )
 
+    def _apply_override(self, evaluations: list[ActionEvaluation], action: int, reason: str) -> None:
+        for i, evaluation in enumerate(evaluations):
+            if evaluation.action == action:
+                evaluations[i] = ActionEvaluation(
+                    evaluation.action, evaluation.kind, evaluation.label,
+                    evaluation.tactical_score + self.anti_throw_penalty,
+                    evaluation.ko_probability,
+                    evaluation.reason + " | " + reason,
+                )
+                return
+
     def evaluate(self, battle: Any, legal_actions: list[int], model_action: int) -> tuple[int, list[ActionEvaluation]]:
         state = snapshot_battle(battle, legal_actions)
         active = getattr(battle, "active_pokemon", None)
@@ -104,7 +113,8 @@ class TacticalEvaluator:
             switch_slots = consistent_pokemon_order(raw_switch_slots)
         except ValueError:
             switch_slots = sorted(raw_switch_slots, key=lambda p: str(getattr(p, "name", getattr(p, "species", ""))))
-        evaluations = []
+
+        evaluations: list[ActionEvaluation] = []
         for action in legal_actions:
             idx = int(action)
             is_move = 0 <= idx < 4 and not state.forced_switch
@@ -116,7 +126,7 @@ class TacticalEvaluator:
                 result = calculate_damage(active, target, move, weather=(state.weather[0] if state.weather else ""))
                 score = self.model_weight * float(idx == model_action)
                 if result.reliable:
-                    score += self.damage_weight * result.percentage_max + self.ko_weight * result.ko_probability
+                    score += self.damage_weight * min(100.0, max(0.0, result.percentage_max)) + self.ko_weight * result.ko_probability
                 label = str(getattr(move, "id", getattr(move, "name", "move")))
                 reason = (f"damage {result.percentage_min:.1f}-{result.percentage_max:.1f}%; KO {result.ko_probability:.0%}"
                           if result.reliable else f"damage unavailable: {result.reason}")
@@ -131,9 +141,9 @@ class TacticalEvaluator:
 
         legal_set = {e.action for e in evaluations if e.kind != "illegal"}
         chosen = int(model_action) if int(model_action) in legal_set else (min(legal_set) if legal_set else 0)
-        safety_action = None
+        safety_action: int | None = None
 
-        # 1) Protect streak safety is deterministic and takes precedence.
+        # Mechanical Protect streak logic comes first.
         sequence_action, sequence_reason = self._protect_sequence_breaker(
             active, target, move_slots, evaluations, chosen,
             weather=(state.weather[0] if state.weather else ""),
@@ -141,17 +151,19 @@ class TacticalEvaluator:
         if sequence_action is not None and sequence_action in legal_set and sequence_action != chosen:
             chosen = sequence_action
             safety_action = sequence_action
-            for i, evaluation in enumerate(evaluations):
-                if evaluation.action == chosen:
-                    evaluations[i] = ActionEvaluation(
-                        evaluation.action, evaluation.kind, evaluation.label,
-                        evaluation.tactical_score + self.anti_throw_penalty,
-                        evaluation.ko_probability,
-                        evaluation.reason + " | " + sequence_reason,
-                    )
-                    break
+            self._apply_override(evaluations, chosen, sequence_reason)
 
-        # 2) Hard threat response must beat speculative predictive search.
+        # Hard safety MUST run before prediction. This prevents the predictive
+        # layer from turning a 27%-HP/poisoned switch into a sacrificial attack.
+        if safety_action is None:
+            decision = safety_override(battle, list(legal_set), chosen)
+            if decision.action is not None and decision.action in legal_set and decision.action != chosen:
+                chosen = decision.action
+                safety_action = decision.action
+                self._apply_override(evaluations, chosen, decision.reason)
+
+        # Revealed threat response is also deterministic enough to outrank
+        # speculative opponent-response prediction.
         if safety_action is None:
             threat_action, threat_reason = hidden_threat_switch_override(
                 battle, list(legal_set), chosen,
@@ -160,18 +172,10 @@ class TacticalEvaluator:
             if threat_action is not None and threat_action in legal_set and threat_action != chosen:
                 chosen = threat_action
                 safety_action = threat_action
-                for i, evaluation in enumerate(evaluations):
-                    if evaluation.action == chosen:
-                        evaluations[i] = ActionEvaluation(
-                            evaluation.action, evaluation.kind, evaluation.label,
-                            evaluation.tactical_score + self.anti_throw_penalty,
-                            evaluation.ko_probability,
-                            evaluation.reason + " | " + threat_reason,
-                        )
-                        break
+                self._apply_override(evaluations, chosen, threat_reason)
 
-        # 3) Strategic preservation/setup conversion has higher authority than
-        # opponent-response speculation because it reasons about our win state.
+        # Our strategic plan controls setup, hazard stacking, win-condition
+        # activation, and preservation of designated sweepers.
         if safety_action is None:
             strategic_action, strategic_reason = strategic_opportunity_override(
                 battle, list(legal_set), chosen
@@ -179,18 +183,10 @@ class TacticalEvaluator:
             if strategic_action is not None and strategic_action in legal_set and strategic_action != chosen:
                 chosen = strategic_action
                 safety_action = strategic_action
-                for i, evaluation in enumerate(evaluations):
-                    if evaluation.action == chosen:
-                        evaluations[i] = ActionEvaluation(
-                            evaluation.action, evaluation.kind, evaluation.label,
-                            evaluation.tactical_score + self.anti_throw_penalty,
-                            evaluation.ko_probability,
-                            evaluation.reason + " | " + strategic_reason,
-                        )
-                        break
+                self._apply_override(evaluations, chosen, strategic_reason)
 
-        # 4) Predictive opponent modelling is deliberately downstream of hard
-        # tactical/strategic protections.
+        # Bayesian response search is last. It now only has authority where its
+        # own conservative gates permit an actual tactical improvement.
         if safety_action is None:
             response_action, response_reason, response_scores = self.response_search.choose(
                 battle, list(legal_set), chosen
@@ -198,32 +194,24 @@ class TacticalEvaluator:
             if response_action is not None and response_action in legal_set and response_action != chosen:
                 chosen = response_action
                 safety_action = response_action
+                predictive_score = next((s.score for s in response_scores if s.action == chosen), None)
                 for i, evaluation in enumerate(evaluations):
                     if evaluation.action == chosen:
-                        predictive_score = next((s.score for s in response_scores if s.action == chosen), evaluation.tactical_score)
                         evaluations[i] = ActionEvaluation(
                             evaluation.action, evaluation.kind, evaluation.label,
-                            predictive_score,
+                            predictive_score if predictive_score is not None else evaluation.tactical_score,
                             evaluation.ko_probability,
                             evaluation.reason + " | " + response_reason,
                         )
                         break
 
-        # 5) Final hard safety verifier.
+        # Final legacy safety pass as a fallback only.
         if self.override_mode in {"verifier", "rerank"} and chosen in legal_set and safety_action is None:
             decision = safety_override(battle, list(legal_set), chosen)
             if decision.action is not None and decision.action in legal_set and decision.action != chosen:
                 chosen = decision.action
                 safety_action = decision.action
-                for i, evaluation in enumerate(evaluations):
-                    if evaluation.action == chosen:
-                        evaluations[i] = ActionEvaluation(
-                            evaluation.action, evaluation.kind, evaluation.label,
-                            evaluation.tactical_score + self.anti_throw_penalty,
-                            evaluation.ko_probability,
-                            evaluation.reason + " | " + decision.reason,
-                        )
-                        break
+                self._apply_override(evaluations, chosen, decision.reason)
 
         if self.override_mode == "rerank" and safety_action is None:
             best = max(evaluations, key=lambda x: x.tactical_score) if evaluations else None
