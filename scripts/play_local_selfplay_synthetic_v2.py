@@ -3,6 +3,10 @@
 The self-play environment uses the existing BattleSessionState safety checks. A
 ChallengeByUsername reset begins a new challenge rather than entering the public
 ladder queue, so the session must explicitly enter QUEUING before reset.
+
+This module intentionally re-exports the underlying environment factory and
+child-command helpers. Curriculum runners import this compatibility module so
+that the lifecycle patch is active while still using the real implementation.
 """
 
 from __future__ import annotations
@@ -36,8 +40,18 @@ def _patched_child_command(args, role, username, opponent_username, log_dir):
     return cmd
 
 
+# Patch the real implementation in-place so objects constructed by the
+# underlying make_local_challenge_env() use the safe reset lifecycle.
 impl.LocalSyntheticChallenge.reset = _patched_reset
 impl.child_command = _patched_child_command
+
+# Re-export the implementation API expected by curriculum runners. Without
+# these aliases, importing this compatibility launcher hides the actual env
+# factory and causes AttributeError before the first battle starts.
+make_local_challenge_env = impl.make_local_challenge_env
+child_command = impl.child_command
+run_role = impl.run_role
+LOCAL_SERVER = impl.LOCAL_SERVER
 
 
 if __name__ == "__main__":
