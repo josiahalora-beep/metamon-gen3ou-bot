@@ -61,6 +61,16 @@ class BattleAiTests(unittest.TestCase):
         burned = calculate_damage(pokemon(status="brn"), pokemon(), Move("earthquake", 100, "Ground"))
         self.assertLess(burned.max_damage, clean.max_damage)
 
+    def test_guaranteed_ko_uses_current_hp_not_max_hp(self):
+        attacker = pokemon("attacker", ("normal",), stats={"atk": 300, "def": 200, "spa": 200, "spd": 200, "spe": 200})
+        defender = pokemon("target", ("normal",), stats={"atk": 200, "def": 100, "spa": 200, "spd": 200, "spe": 200}, hp=160)
+        defender.max_hp = 300
+        defender.current_hp = 160
+        defender.current_hp_fraction = 160 / 300
+        result = calculate_damage(attacker, defender, Move("earthquake", 100, "Ground"))
+        self.assertGreaterEqual(result.min_damage, defender.current_hp)
+        self.assertEqual(result.ko_probability, 1.0)
+
     def test_unknown_opponent_stats_never_create_fake_ko(self):
         unknown = pokemon(stats={"atk": None, "def": None, "spa": None, "spd": None, "spe": None}, hp=100)
         result = calculate_damage(pokemon(), unknown, Move("earthquake", 100, "Ground"))
