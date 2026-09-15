@@ -38,22 +38,41 @@ class BattleLogger:
 
     def _now(self): return datetime.now(timezone.utc).isoformat()
 
-    def start(self, battle_id, *, username="", opponent="", format="gen3ou", team_file=""):
+    @staticmethod
+    def _lead_names(snapshot: Any) -> tuple[str, str]:
+        data = snapshot if isinstance(snapshot, dict) else {}
+        our = data.get("our_active", {}) or {}
+        opp = data.get("opponent_active", {}) or {}
+        return str(our.get("name", "") or ""), str(opp.get("name", "") or "")
+
+    def start(self, battle_id, *, username="", opponent="", format="gen3ou", team_file="", our_lead=""):
         with self.lock:
-            self.db.execute("INSERT OR IGNORE INTO battles(battle_id,started_at,username,opponent,format,team_file) VALUES(?,?,?,?,?,?)",
-                            (battle_id, self._now(), username, opponent, format, team_file))
+            self.db.execute("INSERT OR IGNORE INTO battles(battle_id,started_at,username,opponent,format,team_file,our_lead) VALUES(?,?,?,?,?,?,?)",
+                            (battle_id, self._now(), username, opponent, format, team_file, our_lead))
+            if our_lead:
+                self.db.execute("UPDATE battles SET our_lead=? WHERE battle_id=?", (our_lead, battle_id))
+            self.db.commit()
+
+    def set_leads(self, battle_id, *, our_lead="", opponent_lead=""):
+        with self.lock:
+            self.db.execute("UPDATE battles SET our_lead=COALESCE(NULLIF(?, ''), our_lead), opponent_lead=COALESCE(NULLIF(?, ''), opponent_lead) WHERE battle_id=?",
+                            (our_lead, opponent_lead, battle_id))
             self.db.commit()
 
     def turn(self, battle_id, turn, snapshot, candidates, chosen, final, reasoning):
         with self.lock:
             self.db.execute("INSERT INTO turns(battle_id,turn,snapshot_json,candidate_actions_json,chosen_action,final_action,reasoning_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
                             (battle_id, turn, json.dumps(snapshot, default=str), json.dumps(candidates, default=str), int(chosen), int(final), json.dumps(reasoning, default=str), self._now()))
+            if int(turn) == 1:
+                our_lead, opponent_lead = self._lead_names(snapshot)
+                self.db.execute("UPDATE battles SET our_lead=COALESCE(NULLIF(?, ''), our_lead), opponent_lead=COALESCE(NULLIF(?, ''), opponent_lead) WHERE battle_id=?",
+                                (our_lead, opponent_lead, battle_id))
             self.db.commit()
 
     def finish(self, battle_id, *, opponent_lead="", winner="", result="", final_turn=0,
                rating=None, gxe=None, replay_url="", loss_class=""):
         with self.lock:
-            self.db.execute("UPDATE battles SET finished_at=?,opponent_lead=?,winner=?,result=?,final_turn=?,rating=?,gxe=?,replay_url=?,loss_class=? WHERE battle_id=?",
+            self.db.execute("UPDATE battles SET finished_at=?,opponent_lead=COALESCE(NULLIF(?, ''), opponent_lead),winner=?,result=?,final_turn=?,rating=?,gxe=?,replay_url=?,loss_class=? WHERE battle_id=?",
                             (self._now(), opponent_lead, winner, result, final_turn, rating, gxe, replay_url, loss_class, battle_id))
             self.db.commit()
 

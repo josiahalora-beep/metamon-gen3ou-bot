@@ -1,0 +1,749 @@
+====================================================================================================
+OVERRIDES IN LAST 10 PUBLIC BATTLES
+====================================================================================================
+
+Battle: battle-gen3ou-2681506926-c2qe94xvpengjjiggc1hlp01u6ju0ajpw
+Turn:   111
+Model:  4
+Final:  5
+Reasoning:
+{
+  "model_action": 4,
+  "selected": 5,
+  "turn": 111,
+  "format": "gen3ou",
+  "position": {
+    "opponent_set_inference": [
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "rest(moveobject)",
+          "roar(moveobject)",
+          "toxic(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "earthquake(moveobject)",
+          "hydropump(moveobject)",
+          "icebeam(moveobject)",
+          "protect(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "thunderbolt(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "protect(moveobject)",
+          "roar(moveobject)",
+          "spikes(moveobject)",
+          "toxic(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "earthquake(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "leechseed(moveobject)"
+        ]
+      }
+    ],
+    "active_threat": {
+      "threat_level": 5,
+      "likely_role": "unknown",
+      "checks_remaining": 3,
+      "hypotheses": [
+        {
+          "name": "unknown",
+          "confidence": 0.2,
+          "evidence": [
+            "earthquake(moveobject)",
+            "hydropump(moveobject)",
+            "icebeam(moveobject)",
+            "protect(moveobject)"
+          ]
+        }
+      ]
+    },
+    "win_condition": {
+      "our_remaining": 3,
+      "opponent_remaining": 5
+    },
+    "hazards": {
+      "ours": {
+        "spikes": 3
+      },
+      "opponent": {}
+    },
+    "weather": [
+      "sandstorm"
+    ],
+    "status": {
+      "ours": "",
+      "opponent": ""
+    }
+  }
+}
+--------------------------------------------------------------------------------
+
+Battle: battle-gen3ou-2681506538-307tckcykr45vtfpu8fvyrxj9w3y8fopw
+Turn:   15
+Model:  4
+Final:  5
+Reasoning:
+{
+  "model_action": 4,
+  "selected": 5,
+  "turn": 15,
+  "format": "gen3ou",
+  "position": {
+    "opponent_set_inference": [
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "brickbreak(moveobject)",
+          "focuspunch(moveobject)",
+          "shadowball(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "raindance(moveobject)",
+          "thunderbolt(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "dragondance(moveobject)",
+          "rockslide(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "surf(moveobject)"
+        ]
+      }
+    ],
+    "active_threat": {
+      "threat_level": 4,
+      "likely_role": "unknown",
+      "checks_remaining": 2,
+      "hypotheses": [
+        {
+          "name": "unknown",
+          "confidence": 0.2,
+          "evidence": [
+            "surf(moveobject)"
+          ]
+        }
+      ]
+    },
+    "win_condition": {
+      "our_remaining": 2,
+      "opponent_remaining": 3
+    },
+    "hazards": {
+      "ours": {},
+      "opponent": {}
+    },
+    "weather": [],
+    "status": {
+      "ours": "fnt",
+      "opponent": ""
+    }
+  }
+}
+--------------------------------------------------------------------------------
+
+Battle: battle-gen3ou-2681506538-307tckcykr45vtfpu8fvyrxj9w3y8fopw
+Turn:   15
+Model:  0
+Final:  4
+Reasoning:
+{
+  "model_action": 0,
+  "selected": 4,
+  "turn": 15,
+  "format": "gen3ou",
+  "position": {
+    "opponent_set_inference": [
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "brickbreak(moveobject)",
+          "focuspunch(moveobject)",
+          "shadowball(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "raindance(moveobject)",
+          "thunderbolt(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "dragondance(moveobject)",
+          "rockslide(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "surf(moveobject)"
+        ]
+      }
+    ],
+    "active_threat": {
+      "threat_level": 4,
+      "likely_role": "unknown",
+      "checks_remaining": 3,
+      "hypotheses": [
+        {
+          "name": "unknown",
+          "confidence": 0.2,
+          "evidence": [
+            "surf(moveobject)"
+          ]
+        }
+      ]
+    },
+    "win_condition": {
+      "our_remaining": 3,
+      "opponent_remaining": 3
+    },
+    "hazards": {
+      "ours": {},
+      "opponent": {}
+    },
+    "weather": [],
+    "status": {
+      "ours": "",
+      "opponent": ""
+    }
+  }
+}
+--------------------------------------------------------------------------------
+
+Battle: battle-gen3ou-2681505722-cylp6vm429fegpn48srj53uldwdmmt9pw
+Turn:   72
+Model:  4
+Final:  6
+Reasoning:
+{
+  "model_action": 4,
+  "selected": 6,
+  "turn": 72,
+  "format": "gen3ou",
+  "position": {
+    "opponent_set_inference": [
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "rest(moveobject)",
+          "roar(moveobject)",
+          "thunderbolt(moveobject)",
+          "toxic(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "earthquake(moveobject)",
+          "hydropump(moveobject)",
+          "icebeam(moveobject)",
+          "protect(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "spikes(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "thunderbolt(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "leechseed(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "doubleedge(moveobject)"
+        ]
+      }
+    ],
+    "active_threat": {
+      "threat_level": 6,
+      "likely_role": "unknown",
+      "checks_remaining": 4,
+      "hypotheses": [
+        {
+          "name": "unknown",
+          "confidence": 0.2,
+          "evidence": [
+            "doubleedge(moveobject)"
+          ]
+        }
+      ]
+    },
+    "win_condition": {
+      "our_remaining": 4,
+      "opponent_remaining": 1
+    },
+    "hazards": {
+      "ours": {
+        "spikes": 1
+      },
+      "opponent": {}
+    },
+    "weather": [
+      "sandstorm"
+    ],
+    "status": {
+      "ours": "",
+      "opponent": ""
+    }
+  }
+}
+--------------------------------------------------------------------------------
+
+Battle: battle-gen3ou-2681503000
+Turn:   16
+Model:  0
+Final:  5
+Reasoning:
+{
+  "model_action": 0,
+  "selected": 5,
+  "turn": 16,
+  "format": "gen3ou",
+  "position": {
+    "opponent_set_inference": [
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": []
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "explosion(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "psychic(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "calmmind(moveobject)",
+          "surf(moveobject)"
+        ]
+      }
+    ],
+    "active_threat": {
+      "threat_level": 10,
+      "likely_role": "unknown",
+      "checks_remaining": 3,
+      "hypotheses": [
+        {
+          "name": "unknown",
+          "confidence": 0.2,
+          "evidence": [
+            "calmmind(moveobject)",
+            "surf(moveobject)"
+          ]
+        }
+      ]
+    },
+    "win_condition": {
+      "our_remaining": 3,
+      "opponent_remaining": 2
+    },
+    "hazards": {
+      "ours": {},
+      "opponent": {
+        "spikes": 1
+      }
+    },
+    "weather": [],
+    "status": {
+      "ours": "",
+      "opponent": ""
+    }
+  }
+}
+--------------------------------------------------------------------------------
+
+Battle: battle-gen3ou-2681503000
+Turn:   14
+Model:  5
+Final:  4
+Reasoning:
+{
+  "model_action": 5,
+  "selected": 4,
+  "turn": 14,
+  "format": "gen3ou",
+  "position": {
+    "opponent_set_inference": [
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": []
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "explosion(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "psychic(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "calmmind(moveobject)",
+          "surf(moveobject)"
+        ]
+      }
+    ],
+    "active_threat": {
+      "threat_level": 10,
+      "likely_role": "unknown",
+      "checks_remaining": 3,
+      "hypotheses": [
+        {
+          "name": "unknown",
+          "confidence": 0.2,
+          "evidence": [
+            "calmmind(moveobject)",
+            "surf(moveobject)"
+          ]
+        }
+      ]
+    },
+    "win_condition": {
+      "our_remaining": 3,
+      "opponent_remaining": 2
+    },
+    "hazards": {
+      "ours": {},
+      "opponent": {
+        "spikes": 1
+      }
+    },
+    "weather": [],
+    "status": {
+      "ours": "fnt",
+      "opponent": ""
+    }
+  }
+}
+--------------------------------------------------------------------------------
+
+Battle: battle-gen3ou-2681503000
+Turn:   14
+Model:  0
+Final:  4
+Reasoning:
+{
+  "model_action": 0,
+  "selected": 4,
+  "turn": 14,
+  "format": "gen3ou",
+  "position": {
+    "opponent_set_inference": [
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": []
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "explosion(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "psychic(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "calmmind(moveobject)",
+          "surf(moveobject)"
+        ]
+      }
+    ],
+    "active_threat": {
+      "threat_level": 10,
+      "likely_role": "unknown",
+      "checks_remaining": 4,
+      "hypotheses": [
+        {
+          "name": "unknown",
+          "confidence": 0.2,
+          "evidence": [
+            "calmmind(moveobject)",
+            "surf(moveobject)"
+          ]
+        }
+      ]
+    },
+    "win_condition": {
+      "our_remaining": 4,
+      "opponent_remaining": 2
+    },
+    "hazards": {
+      "ours": {},
+      "opponent": {
+        "spikes": 1
+      }
+    },
+    "weather": [],
+    "status": {
+      "ours": "",
+      "opponent": ""
+    }
+  }
+}
+--------------------------------------------------------------------------------
+
+Battle: battle-gen3ou-2681500749
+Turn:   40
+Model:  3
+Final:  5
+Reasoning:
+{
+  "model_action": 3,
+  "selected": 5,
+  "turn": 40,
+  "format": "gen3ou",
+  "position": {
+    "opponent_set_inference": [
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "batonpass(moveobject)",
+          "hiddenpower(moveobject)",
+          "substitute(moveobject)",
+          "thunderbolt(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "protect(moveobject)",
+          "roar(moveobject)",
+          "toxic(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "batonpass(moveobject)",
+          "substitute(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "bellydrum(moveobject)",
+          "hiddenpower(moveobject)",
+          "overheat(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "batonpass(moveobject)",
+          "spore(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "doubleedge(moveobject)"
+        ]
+      }
+    ],
+    "active_threat": {
+      "threat_level": 4,
+      "likely_role": "unknown",
+      "checks_remaining": 5,
+      "hypotheses": [
+        {
+          "name": "unknown",
+          "confidence": 0.2,
+          "evidence": [
+            "doubleedge(moveobject)"
+          ]
+        }
+      ]
+    },
+    "win_condition": {
+      "our_remaining": 5,
+      "opponent_remaining": 4
+    },
+    "hazards": {
+      "ours": {},
+      "opponent": {
+        "spikes": 1
+      }
+    },
+    "weather": [],
+    "status": {
+      "ours": "",
+      "opponent": ""
+    }
+  }
+}
+--------------------------------------------------------------------------------
+
+Battle: battle-gen3ou-2681500359
+Turn:   8
+Model:  8
+Final:  0
+Reasoning:
+{
+  "model_action": 8,
+  "selected": 0,
+  "turn": 8,
+  "format": "gen3ou",
+  "position": {
+    "opponent_set_inference": [
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "raindance(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "explosion(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "explosion(moveobject)",
+          "reflect(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": [
+          "rockslide(moveobject)"
+        ]
+      },
+      {
+        "name": "unknown",
+        "confidence": 0.2,
+        "evidence": []
+      }
+    ],
+    "active_threat": {
+      "threat_level": 6,
+      "likely_role": "unknown",
+      "checks_remaining": 4,
+      "hypotheses": [
+        {
+          "name": "unknown",
+          "confidence": 0.2,
+          "evidence": []
+        }
+      ]
+    },
+    "win_condition": {
+      "our_remaining": 4,
+      "opponent_remaining": 1
+    },
+    "hazards": {
+      "ours": {},
+      "opponent": {
+        "reflect": 4
+      }
+    },
+    "weather": [],
+    "status": {
+      "ours": "",
+      "opponent": ""
+    }
+  }
+}
+--------------------------------------------------------------------------------
