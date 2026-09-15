@@ -38,6 +38,7 @@ Dugtrio @ Choice Band
 Ability: Arena Trap
 EVs: 4 HP / 252 Atk / 252 Spe
 Jolly Nature
+IVs: 30 Atk / 30 Def / 30 SpD
 - Earthquake
 - Rock Slide
 - Aerial Ace
@@ -47,6 +48,7 @@ Zapdos @ Leftovers
 Ability: Pressure
 EVs: 252 HP / 80 Def / 176 Spe
 Timid Nature
+IVs: 2 Atk / 30 Def
 - Thunderbolt
 - Hidden Power [Ice]
 - Rest
