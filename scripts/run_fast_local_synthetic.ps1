@@ -5,6 +5,12 @@ param(
     [string]$OpponentUsername = 'LocalSynthetic-B',
     [string]$TeamDir = 'public_gen3ou_teams',
     [string]$LogDir = 'battle_data\local_fast',
+    [string]$TrajectoryDir = 'battle_data\local_fast\trajectories',
+    [int]$Checkpoint = 48,
+    [string]$LocalRunDir = '',
+    [string]$LocalRunName = '',
+    [int]$LocalCheckpoint = 0,
+    [double]$Temperature = 1.0,
     [switch]$UpdateFastFork,
     [switch]$DecisionDebug
 )
@@ -37,27 +43,32 @@ try {
         throw 'Fast Showdown server did not open port 8000 within 30 seconds.'
     }
 
-    # The local runner uses two independent SyntheticRLV2 processes. One accepts
-    # challenges and the other sends them, so there is no public-ladder or human
-    # matchmaking involved. Keep the sentinel for compatibility with older local
-    # runner invocations; the self-play runner itself does not authenticate.
     $Args = @(
-        'scripts\play_local_selfplay_synthetic_v2.py',
+        'scripts\play_local_curriculum.py',
         '--username', $Username,
         '--opponent-username', $OpponentUsername,
         '--team-dir', $TeamDir,
         '--battles', $Battles,
-        '--enable-battle-ai',
-        '--log-dir', $LogDir
+        '--checkpoint', $Checkpoint,
+        '--temperature', $Temperature,
+        '--trajectory-dir', $TrajectoryDir,
+        '--log-dir', $LogDir,
+        '--enable-battle-ai'
     )
+    if ($LocalRunDir -ne '') {
+        if ($LocalRunName -eq '' -or $LocalCheckpoint -le 0) {
+            throw 'LocalRunDir requires LocalRunName and LocalCheckpoint.'
+        }
+        $Args += @('--local-run-dir', $LocalRunDir, '--local-run-name', $LocalRunName, '--local-checkpoint', $LocalCheckpoint)
+    }
     if ($DecisionDebug) {
         $Args += '--decision-debug'
     }
 
-    Write-Host "Running $Battles local SyntheticRLV2-vs-SyntheticRLV2 Gen 3 OU battles..."
+    Write-Host "Running $Battles local curriculum battles with independently randomized teams..."
     python @Args
     if ($LASTEXITCODE -ne 0) {
-        throw "Local SyntheticRLV2 self-play runner exited with code $LASTEXITCODE."
+        throw "Local curriculum runner exited with code $LASTEXITCODE."
     }
 }
 finally {
