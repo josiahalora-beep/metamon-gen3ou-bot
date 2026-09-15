@@ -23,10 +23,9 @@ class ResponseScore:
 class ResponseSearcher:
     """Bounded response search anchored to the learned policy.
 
-    The learned action is the anchor. Prediction may only override it when
-    the current action is mechanically sound and the predicted response is
-    sufficiently specific and valuable. Action indices always use the same
-    canonical ordering as the main evaluator.
+    Prediction is subordinate to visible mechanics. A speculative response
+    branch cannot manufacture value from an immune move, a fragile switch, or
+    an arbitrary alternative action. Action indices use canonical Metamon order.
     """
 
     _MOVE_TYPES = {
@@ -45,6 +44,8 @@ class ResponseSearcher:
     _MODEL_SWITCH_HP_FLOOR = 0.30
     _MODEL_SWITCH_POISON_HP_FLOOR = 0.45
     _SWITCH_OVERRIDE_MARGIN = 4.0
+    _MOVE_OVERRIDE_DAMAGE_GAIN = 20.0
+    _MOVE_OVERRIDE_KO_GAIN = 0.20
 
     def __init__(self, opponent_model: OpponentModel | None = None, *, override_margin: float = 1.5):
         self.opponent_model = opponent_model or OpponentModel()
@@ -53,12 +54,6 @@ class ResponseSearcher:
     @staticmethod
     def _move_id(move: Any) -> str:
         return str(getattr(move, "id", getattr(move, "name", "")) or "").lower().replace(" ", "").replace("-", "").replace("_", "")
-
-    @classmethod
-    def _move_type(cls, move: Any) -> str:
-        value = getattr(move, "type", "")
-        raw = str(getattr(value, "name", value) or "").lower().replace(" ", "").replace("-", "").replace("_", "")
-        return raw or cls._MOVE_TYPES.get(cls._move_id(move), "")
 
     @staticmethod
     def _moves(battle: Any) -> list[Any]:
@@ -87,8 +82,14 @@ class ResponseSearcher:
         except ValueError:
             return sorted(raw, key=lambda p: str(getattr(p, "name", getattr(p, "species", ""))))
 
-    @staticmethod
-    def _matchup(attack_type: str, defender: Any) -> float:
+    @classmethod
+    def _move_type(cls, move: Any) -> str:
+        value = getattr(move, "type", "")
+        raw = str(getattr(value, "name", value) or "").lower().replace(" ", "").replace("-", "").replace("_", "")
+        return raw or cls._MOVE_TYPES.get(cls._move_id(move), "")
+
+    @classmethod
+    def _type_chart(cls, attack_type: str, defender: Any) -> float:
         chart = {
             "fire": {"grass": 2, "ice": 2, "bug": 2, "steel": 2, "fire": .5, "water": .5, "rock": .5, "dragon": .5},
             "water": {"fire": 2, "ground": 2, "rock": 2, "water": .5, "grass": .5, "dragon": .5},
@@ -104,11 +105,11 @@ class ResponseSearcher:
             "ghost": {"ghost": 2, "psychic": 2, "dark": .5, "normal": 0},
             "steel": {"ice": 2, "rock": 2, "fire": .5, "water": .5, "electric": .5, "steel": .5},
         }
-        multiplier = 1.0
+        value = 1.0
         for defender_type in getattr(defender, "types", ()) or ():
             key = str(getattr(defender_type, "name", defender_type)).lower()
-            multiplier *= chart.get(attack_type, {}).get(key, 1.0)
-        return multiplier
+            value *= chart.get(attack_type, {}).get(key, 1.0)
+        return value
 
     @staticmethod
     def _prediction_is_supported(battle: Any) -> bool:
@@ -138,38 +139,40 @@ class ResponseSearcher:
             current = calculate_damage(active, target, move, weather="")
             if response.kind == "switch" and response.target:
                 candidate = next((p for p in self._switch_slots(battle)
-                                  if str(getattr(p, "species", "")).lower().replace(" ", "").replace("-", "").replace("_", "") == response.target), None)
+                                  if self._normalize_species(p) == response.target), None)
                 if candidate is not None:
                     branch = calculate_damage(active, candidate, move, weather="")
                     if branch.reliable:
-                        return 0.80 * branch.percentage_max + 10.0 * branch.ko_probability
+                        # Prediction bonus is bounded and secondary to current-board value.
+                        current_value = (0.18 * current.percentage_max + 12.0 * current.ko_probability) if current.reliable else 0.0
+                        branch_value = 0.18 * branch.percentage_max + 12.0 * branch.ko_probability
+                        return current_value + max(0.0, branch_value - current_value) * 0.40
             if current.reliable:
-                value = 0.18 * current.percentage_max + 12.0 * current.ko_probability
-            else:
-                value = 0.0
-            if response.kind == "protect":
-                value += 2.0 if self._move_id(move) in {"protect", "detect", "endure"} else -5.0
-            elif response.kind == "setup":
-                value += 3.0 * (current.ko_probability if current.reliable else 0.0)
-            return value
+                return 0.18 * current.percentage_max + 12.0 * current.ko_probability
+            return 0.0
 
         switches = self._own_switch_slots(battle)
         idx = action - 4
         if not (0 <= idx < len(switches)):
             return -100.0
         candidate = switches[idx]
-        value = 2.0 + 5.0 * float(getattr(candidate, "current_hp_fraction", 1.0) or 1.0)
+        value = 4.0 + 6.0 * float(getattr(candidate, "current_hp_fraction", 1.0) or 1.0)
         if response.kind == "attack" and response.move:
             target_moves = list(getattr(target, "moves", {}).values())
             move_obj = next((m for m in target_moves if self._move_id(m) == response.move), None)
             if move_obj is not None:
                 damage = calculate_damage(target, candidate, move_obj, weather="")
                 if damage.reliable:
-                    value += max(0.0, 18.0 - 0.20 * damage.percentage_max)
+                    value += max(0.0, 20.0 - 0.20 * damage.percentage_max)
                     if damage.ko_probability >= 0.80:
-                        value -= 18.0
-                value += 5.0 * max(0.0, 1.0 - self._matchup(self._move_type(move_obj), candidate))
+                        value -= 20.0
+                if self._type_chart(self._move_type(move_obj), candidate) < 1.0:
+                    value += 3.0
         return value
+
+    @staticmethod
+    def _normalize_species(pokemon: Any) -> str:
+        return str(getattr(pokemon, "species", getattr(pokemon, "name", "")) or "").lower().replace(" ", "").replace("-", "").replace("_", "")
 
     def _model_switch_is_protected(self, battle: Any, model_action: int) -> bool:
         if model_action < 4:
@@ -182,8 +185,6 @@ class ResponseSearcher:
         return hp <= self._MODEL_SWITCH_HP_FLOOR or (hp <= self._MODEL_SWITCH_POISON_HP_FLOOR and "poison" in status)
 
     def _predictive_attack_can_override_switch(self, battle: Any, action: int, responses: list[PredictedResponse], switch_mass: float) -> bool:
-        if action >= 4:
-            return False
         current_damage, current_ko, reliable = self._current_damage(battle, action)
         if not reliable:
             return False
@@ -191,20 +192,35 @@ class ResponseSearcher:
             return True
         if switch_mass < 0.55:
             return False
+        moves = self._moves(battle)
+        if not (0 <= action < len(moves)):
+            return False
+        active = getattr(battle, "active_pokemon", None)
         for response in responses:
             if response.kind != "switch" or response.probability < 0.22 or not response.target:
                 continue
-            candidate = next((p for p in self._switch_slots(battle)
-                              if str(getattr(p, "species", "")).lower().replace(" ", "").replace("-", "").replace("_", "") == response.target), None)
+            candidate = next((p for p in self._switch_slots(battle) if self._normalize_species(p) == response.target), None)
             if candidate is None:
                 continue
-            moves = self._moves(battle)
-            if action >= len(moves):
-                continue
-            branch = calculate_damage(getattr(battle, "active_pokemon"), candidate, moves[action], weather="")
+            branch = calculate_damage(active, candidate, moves[action], weather="")
             if branch.reliable and branch.ko_probability >= 0.80:
                 return True
         return False
+
+    def _attack_override_is_material(self, battle: Any, model_action: int, best_action: int, responses: list[PredictedResponse], switch_mass: float) -> bool:
+        if not (model_action < 4 and best_action < 4):
+            return True
+        model_damage, model_ko, model_ok = self._current_damage(battle, model_action)
+        best_damage, best_ko, best_ok = self._current_damage(battle, best_action)
+        if not (model_ok and best_ok):
+            return False
+        if best_ko >= 0.85 and model_ko < 0.85:
+            return True
+        if best_ko - model_ko >= self._MOVE_OVERRIDE_KO_GAIN:
+            return True
+        if best_damage - model_damage >= self._MOVE_OVERRIDE_DAMAGE_GAIN:
+            return True
+        return switch_mass >= 0.55 and any(r.kind == "switch" and r.probability >= 0.22 for r in responses)
 
     def choose(self, battle: Any, legal_actions: list[int], model_action: int) -> tuple[int | None, str, list[ResponseScore]]:
         if not self._prediction_is_supported(battle):
@@ -220,15 +236,13 @@ class ResponseSearcher:
             expected = sum(response.probability * self._own_action_value(battle, int(action), response) for response in responses)
             current_damage, _, current_reliable = self._current_damage(battle, int(action))
             model_damage, _, model_reliable = self._current_damage(battle, int(model_action))
-
-            if int(action) < 4 and current_reliable:
-                if current_damage <= 0.0 and switch_mass < self._SWITCH_MASS_FOR_IMMUNE_OVERRIDE:
-                    expected = -100.0
-                if (int(action) != int(model_action) and int(model_action) < 4 and model_reliable
-                        and current_damage < max(1.0, model_damage * self._WEAK_CURRENT_RATIO)
-                        and switch_mass < self._SWITCH_MASS_FOR_WEAK_OVERRIDE):
-                    expected = min(expected, model_damage * 0.10)
-
+            if int(action) < 4 and current_reliable and current_damage <= 0.0 and switch_mass < self._SWITCH_MASS_FOR_IMMUNE_OVERRIDE:
+                expected = -100.0
+            if (int(action) != int(model_action) and int(action) < 4 and int(model_action) < 4
+                    and current_reliable and model_reliable
+                    and current_damage < max(1.0, model_damage * self._WEAK_CURRENT_RATIO)
+                    and switch_mass < self._SWITCH_MASS_FOR_WEAK_OVERRIDE):
+                expected = min(expected, -10.0)
             anchor = 2.5 if int(action) == int(model_action) else 0.0
             scores.append(ResponseScore(int(action), expected + anchor, expected, ""))
 
@@ -242,6 +256,17 @@ class ResponseSearcher:
         model = next((s for s in scores if s.action == int(model_action)), None)
         if model is None:
             return None, "", scores
+
+        if best.action != model.action:
+            if best.action >= 4 and int(model_action) < 4:
+                # Do not turn a normal model attack into a speculative switch
+                # unless the predicted attack branch shows that the switch is safer.
+                attack_mass = sum(r.probability for r in actionable if r.kind == "attack" and r.move)
+                if attack_mass < 0.30:
+                    return None, "", scores
+            if best.action < 4 and int(model_action) < 4 and not self._attack_override_is_material(battle, int(model_action), best.action, responses, switch_mass):
+                return None, "", scores
+
         advantage = best.score - model.score
         required_margin = max(self.override_margin, self._SWITCH_OVERRIDE_MARGIN if int(model_action) >= 4 else self.override_margin)
         if best.action == model.action or advantage < required_margin:
