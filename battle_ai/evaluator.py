@@ -8,6 +8,8 @@ from .state import snapshot_battle
 from .strategic import safety_override
 from .strategic_plan import strategic_opportunity_override
 from .threat_response import hidden_threat_switch_override
+from .opponent_model import OpponentModel
+from .response_search import ResponseSearcher
 from metamon.interface import consistent_move_order, consistent_pokemon_order
 
 
@@ -22,31 +24,30 @@ class ActionEvaluation:
 
 
 class TacticalEvaluator:
-    """Conservative Gen 3 verifier/reranker with strategic anti-throw checks."""
+    """Conservative Gen 3 verifier/reranker with predictive response search."""
 
     def __init__(self, *, model_weight=1.0, damage_weight=0.35, ko_weight=2.0,
                  switch_penalty=0.15, anti_throw_penalty=2.0,
-                 override_mode="verifier"):
+                 override_mode="verifier", response_search_margin=1.5):
         self.model_weight = model_weight
         self.damage_weight = damage_weight
         self.ko_weight = ko_weight
         self.switch_penalty = switch_penalty
         self.anti_throw_penalty = anti_throw_penalty
         self.override_mode = override_mode
+        self.opponent_model = OpponentModel()
+        self.response_search = ResponseSearcher(self.opponent_model, override_margin=response_search_margin)
 
     @staticmethod
     def _is_passive_move(move: Any) -> bool:
-        """Moves that do not directly deal damage this turn."""
         return int(getattr(move, "base_power", 0) or 0) <= 0
 
     @staticmethod
     def _is_protect_counter_move(move: Any) -> bool:
-        """Protect/Detect/Endure-style moves sharing Gen 3's streak counter."""
         return bool(getattr(move, "is_protect_counter", False))
 
     @staticmethod
     def _protect_counter(active: Any) -> int:
-        """Consecutive successful Protect/Detect/Endure uses tracked by poke-env."""
         try:
             return max(0, int(getattr(active, "_protect_counter", 0) or 0))
         except (TypeError, ValueError):
@@ -55,7 +56,6 @@ class TacticalEvaluator:
     def _protect_sequence_breaker(self, active: Any, target: Any, move_slots: list[Any],
                                   evaluations: list[ActionEvaluation], model_action: int,
                                   weather: str = "") -> tuple[int | None, str]:
-        """Avoid knowingly spending another Gen 3 protection-streak roll."""
         if not (0 <= model_action < 4) or model_action >= len(move_slots):
             return None, ""
         selected = move_slots[model_action]
@@ -64,7 +64,6 @@ class TacticalEvaluator:
         counter = self._protect_counter(active)
         if counter <= 0:
             return None, ""
-
         candidates = []
         for evaluation in evaluations:
             if evaluation.kind != "move" or evaluation.action == model_action:
@@ -80,7 +79,6 @@ class TacticalEvaluator:
             candidates.append((result.ko_probability, result.max_damage, -evaluation.action, evaluation.action, move))
         if not candidates:
             return None, ""
-
         _, _, _, action, move = max(candidates)
         move_name = getattr(move, "name", getattr(move, "id", "attack"))
         success_probability = 1.0 / (2 ** counter)
@@ -152,10 +150,24 @@ class TacticalEvaluator:
                     )
                     break
 
-        # Hidden-stat battles can reach positions where the opponent's moves are
-        # not revealed yet. Give the model one last chance to attack/act, but do
-        # not permit a passive turn when broad speed/offense evidence points to a
-        # stronger opposing attacker and a clearly better defensive teammate.
+        if safety_action is None:
+            response_action, response_reason, response_scores = self.response_search.choose(
+                battle, list(legal_set), chosen
+            )
+            if response_action is not None and response_action in legal_set and response_action != chosen:
+                chosen = response_action
+                safety_action = response_action
+                for i, evaluation in enumerate(evaluations):
+                    if evaluation.action == chosen:
+                        predictive_score = next((s.score for s in response_scores if s.action == chosen), evaluation.tactical_score)
+                        evaluations[i] = ActionEvaluation(
+                            evaluation.action, evaluation.kind, evaluation.label,
+                            predictive_score,
+                            evaluation.ko_probability,
+                            evaluation.reason + " | " + response_reason,
+                        )
+                        break
+
         if safety_action is None:
             threat_action, threat_reason = hidden_threat_switch_override(
                 battle, list(legal_set), chosen,
