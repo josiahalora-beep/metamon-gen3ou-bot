@@ -1,7 +1,8 @@
 import unittest
 from types import SimpleNamespace
 
-from battle_ai.strategic import safety_override
+from battle_ai.damage import calculate_damage
+from battle_ai.strategic import _team_pokemon_for_action, safety_override
 
 
 class Move:
@@ -75,7 +76,8 @@ class StrategicSafetyTests(unittest.TestCase):
         opponent = pokemon("unknown", types=("normal",), moves=[])
         battle = self._battle(active, opponent, [safe])
         decision = safety_override(battle, [4], 0)
-        self.assertIsNone(decision.action)
+        self.assertEqual(decision.action, 4)
+        self.assertTrue(decision.hard)
 
     def test_setup_emergency_prefers_reliable_attack(self):
         calm_mind = Move("calmmind", 0, "Psychic")
@@ -87,6 +89,53 @@ class StrategicSafetyTests(unittest.TestCase):
         if decision.action is not None:
             self.assertEqual(decision.action, 1)
             self.assertTrue(decision.hard)
+
+    def test_low_hp_preservation_refuses_non_guaranteed_attack(self):
+        attack = Move("hiddenpowerice", 70, "Ice")
+        active = pokemon("zapdos", types=("electric", "flying"), hp=34, max_hp=100,
+                          moves=[attack], stats={"atk": 250, "def": 200, "spa": 300, "spd": 220, "spe": 300})
+        switch_a = pokemon("blissey", types=("normal",), hp=100)
+        switch_b = pokemon("skarmory", types=("steel", "flying"), hp=80)
+        opponent = pokemon("swampert", types=("water", "ground"), hp=85, max_hp=100,
+                            base_stats={"hp": 100, "def": 90, "spd": 90, "atk": 110, "spa": 85, "spe": 60},
+                            stats={"atk": None, "def": None, "spa": None, "spd": None, "spe": None})
+        battle = self._battle(active, opponent, [switch_a, switch_b])
+        decision = safety_override(battle, [0, 4, 5], 0)
+        self.assertEqual(decision.action, 4)
+        self.assertTrue(decision.hard)
+
+    def test_switch_action_uses_canonical_pokemon_order(self):
+        active = pokemon("zaptos")
+        blissey = pokemon("blissey")
+        dugtrio = pokemon("dugtrio")
+        metagross = pokemon("metagross")
+        skarmory = pokemon("skarmory")
+        suicune = pokemon("suicune")
+        active.active = True
+        battle = SimpleNamespace(team={
+            "z": active,
+            "s": suicune,
+            "b": blissey,
+            "m": metagross,
+            "d": dugtrio,
+            "k": skarmory,
+        })
+        self.assertIs(_team_pokemon_for_action(battle, 4), blissey)
+        self.assertIs(_team_pokemon_for_action(battle, 5), dugtrio)
+        self.assertIs(_team_pokemon_for_action(battle, 6), metagross)
+        self.assertIs(_team_pokemon_for_action(battle, 7), skarmory)
+        self.assertIs(_team_pokemon_for_action(battle, 8), suicune)
+
+    def test_placeholder_hp_is_estimated_for_100_base_hp_species(self):
+        defender = pokemon("celebi", types=("grass", "psychic"), hp=75, max_hp=100,
+                            base_stats={"hp": 100, "def": 100, "spd": 100, "atk": 100, "spa": 100, "spe": 100},
+                            stats={"atk": None, "def": None, "spa": None, "spd": None, "spe": None})
+        attacker = pokemon("zapdos", types=("electric", "flying"),
+                           stats={"atk": 250, "def": 200, "spa": 300, "spd": 220, "spe": 300})
+        result = calculate_damage(attacker, defender, Move("thunderbolt", 95, "Electric"))
+        self.assertTrue(result.reliable)
+        self.assertIn("estimated", result.reason)
+        self.assertGreater(result.percentage_max, 0)
 
 
 if __name__ == "__main__": unittest.main()
