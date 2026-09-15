@@ -40,6 +40,28 @@ def _known_or_estimated(obj: Any, stat: str) -> tuple[int, int] | None:
     return stat_range(obj, stat)
 
 
+def _current_hp_range(obj: Any, hp_known: int) -> tuple[int, int] | None:
+    """Return the defender's current HP range, not its maximum HP range."""
+    current = getattr(obj, "current_hp", None)
+    try:
+        current = int(current) if current is not None else None
+    except (TypeError, ValueError):
+        current = None
+    if current is not None and current >= 0:
+        return current, current
+
+    frac = getattr(obj, "current_hp_fraction", None)
+    try:
+        frac = float(frac) if frac is not None else None
+    except (TypeError, ValueError):
+        frac = None
+    if frac is not None and 0.0 <= frac <= 1.0 and hp_known > 0:
+        hp = max(0, int(round(hp_known * frac)))
+        return hp, hp
+
+    return (hp_known, hp_known) if hp_known > 0 else None
+
+
 def calculate_damage(attacker: Any, defender: Any, move: Any, *, weather: str = "",
                       critical: bool = False, reflect: bool = False,
                       light_screen: bool = False, random_rolls: int = 16) -> DamageRange:
@@ -70,12 +92,15 @@ def calculate_damage(attacker: Any, defender: Any, move: Any, *, weather: str = 
         hp_known = 0
     hp_estimate = hp_range_from_observation(defender)
     placeholder_hp = hp_known == 100 and hp_estimate is not None
-    if hp_known > 0 and not placeholder_hp:
-        hp_range = (hp_known, hp_known)
-    elif hp_estimate is not None:
+    if placeholder_hp:
+        # Poke-env's public Gen 3 path may expose 100 as a placeholder max HP.
+        # The estimator converts the observed HP fraction into a conservative
+        # current-HP envelope.
         hp_range = hp_estimate
     else:
-        return DamageRange(0, 0, 0.0, 0.0, 0.0, reliable=False, reason="missing battle HP")
+        hp_range = _current_hp_range(defender, hp_known)
+        if hp_range is None:
+            return DamageRange(0, 0, 0.0, 0.0, 0.0, reliable=False, reason="missing battle HP")
 
     boosts_a = getattr(attacker, "boosts", {}) or {}
     boosts_d = getattr(defender, "boosts", {}) or {}
@@ -131,7 +156,7 @@ def calculate_damage(attacker: Any, defender: Any, move: Any, *, weather: str = 
         ko_probability = 1.0 if min_damage >= hp_hi else 0.0
     else:
         ko_probability = sum(v >= hp_lo for v in values) / len(values)
-    pct_min = 100.0 * min_damage / hp_hi
-    pct_max = 100.0 * max_damage / hp_lo
+    pct_min = 100.0 * min_damage / max(1, hp_known or hp_hi)
+    pct_max = 100.0 * max_damage / max(1, hp_known or hp_lo)
     reason = "estimated from species/base stats and observed HP" if estimated else ""
     return DamageRange(min_damage, max_damage, pct_min, pct_max, ko_probability, reliable=True, reason=reason)
