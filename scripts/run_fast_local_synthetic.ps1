@@ -1,7 +1,8 @@
 param(
     [int]$Battles = 100,
     [int]$SimulatorProcesses = 4,
-    [string]$Username = 'LocalSynthetic',
+    [string]$Username = 'LocalSynthetic-A',
+    [string]$OpponentUsername = 'LocalSynthetic-B',
     [string]$TeamDir = 'public_gen3ou_teams',
     [string]$LogDir = 'battle_data\local_fast',
     [switch]$UpdateFastFork,
@@ -36,26 +37,27 @@ try {
         throw 'Fast Showdown server did not open port 8000 within 30 seconds.'
     }
 
-    # Local Showdown is launched with --no-security. Use a non-secret
-    # placeholder because PowerShell can drop an empty-string argument.
+    # The local runner uses two independent SyntheticRLV2 processes. One accepts
+    # challenges and the other sends them, so there is no public-ladder or human
+    # matchmaking involved. Keep the sentinel for compatibility with older local
+    # runner invocations; the self-play runner itself does not authenticate.
     $Args = @(
-        'scripts\play_local_fast_synthetic.py',
+        'scripts\play_local_selfplay_synthetic.py',
         '--username', $Username,
-        '--password', 'local',
+        '--opponent-username', $OpponentUsername,
         '--team-dir', $TeamDir,
         '--battles', $Battles,
         '--enable-battle-ai',
-        '--log-dir', $LogDir,
-        '--analysis'
+        '--log-dir', $LogDir
     )
     if ($DecisionDebug) {
         $Args += '--decision-debug'
     }
 
-    Write-Host "Running $Battles local Gen 3 OU battles against the accelerated server..."
+    Write-Host "Running $Battles local SyntheticRLV2-vs-SyntheticRLV2 Gen 3 OU battles..."
     python @Args
     if ($LASTEXITCODE -ne 0) {
-        throw "Local SyntheticRLV2 runner exited with code $LASTEXITCODE."
+        throw "Local SyntheticRLV2 self-play runner exited with code $LASTEXITCODE."
     }
 }
 finally {
