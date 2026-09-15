@@ -78,6 +78,28 @@ class ResponseSearchTests(unittest.TestCase):
         if action == 1:
             self.assertIn("response search", reason)
 
+    def test_predictive_search_never_picks_immune_move_without_strong_switch_evidence(self):
+        model = OpponentModel()
+        model._profile_move_prior = lambda pokemon: {"thunderbolt": 1.0}
+        search = ResponseSearcher(model, override_margin=0.1)
+        earthquake = FakeMove("earthquake", 100, "Ground")
+        rockslide = FakeMove("rockslide", 75, "Rock")
+        own = self.pokemon("Tyranitar", moves=[earthquake, rockslide], types=("Rock", "Dark"), active=True,
+                           base_stats={"hp": 100, "atk": 134, "def": 110, "spa": 95, "spd": 100, "spe": 61})
+        thunderbolt = FakeMove("thunderbolt", 95, "Electric")
+        opp = self.pokemon("Zapdos", moves=[thunderbolt], types=("Electric", "Flying"), active=True,
+                           base_stats={"hp": 90, "atk": 90, "def": 85, "spa": 125, "spd": 90, "spe": 100})
+        battle = SimpleNamespace(
+            battle_tag="battle-immunity",
+            active_pokemon=own,
+            opponent_active_pokemon=opp,
+            team={"Tyranitar": own},
+            opponent_team={"Zapdos": opp},
+        )
+        action, reason, scores = search.choose(battle, [0, 1], 0)
+        self.assertNotEqual(action, 0)
+        self.assertNotIn("best=0", reason)
+
 
 if __name__ == "__main__":
     unittest.main()
