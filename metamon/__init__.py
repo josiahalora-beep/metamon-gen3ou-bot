@@ -55,3 +55,6 @@ if not os.environ.get("METAMON_ALLOW_ANY_POKE_ENV"):
         )
 
 from .config import SUPPORTED_BATTLE_FORMATS, METAMON_CACHE_DIR
+from .public_ladder_hardening import install_public_ladder_hardening
+
+install_public_ladder_hardening()
