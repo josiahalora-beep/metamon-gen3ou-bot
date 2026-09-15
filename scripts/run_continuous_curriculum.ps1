@@ -1,5 +1,6 @@
 param(
     [int]$BattlesPerIteration = 100,
+    [int]$BattleWorkers = 2,
     [int]$Iterations = 0,
     [int]$SimulatorProcesses = 4,
     [int]$StartingCheckpoint = 48,
@@ -18,6 +19,11 @@ $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $RepoRoot
 
+if ($BattleWorkers -lt 1) { throw 'BattleWorkers must be at least 1.' }
+if ($SimulatorProcesses -lt $BattleWorkers) {
+    Write-Warning "SimulatorProcesses ($SimulatorProcesses) is below BattleWorkers ($BattleWorkers). Consider using at least one simulator process per worker."
+}
+
 New-Item -ItemType Directory -Force $RootDir | Out-Null
 New-Item -ItemType Directory -Force $SaveDir | Out-Null
 
@@ -34,8 +40,6 @@ while (($Iterations -eq 0) -or ($iteration -le $Iterations)) {
     New-Item -ItemType Directory -Force $trajectoryDir | Out-Null
     New-Item -ItemType Directory -Force $logDir | Out-Null
 
-    # Rotate exploration temperature so the dataset contains both sharp and
-    # exploratory decisions instead of a single deterministic policy behavior.
     $phase = ($iteration - 1) % 3
     if ($phase -eq 0) { $temperature = 0.85 }
     elseif ($phase -eq 1) { $temperature = 1.10 }
@@ -45,7 +49,7 @@ while (($Iterations -eq 0) -or ($iteration -le $Iterations)) {
     Write-Host ('=' * 72)
     Write-Host "CURRICULUM ITERATION $iteration"
     Write-Host "Training run: $runName"
-    Write-Host "Battles: $BattlesPerIteration | Temperature: $temperature | Teams: $TeamDir"
+    Write-Host "Battles: $BattlesPerIteration | Workers: $BattleWorkers | Simulators: $SimulatorProcesses | Temperature: $temperature | Teams: $TeamDir"
     if ($previousRunName -eq '') {
         Write-Host "Opponent/model source: SyntheticRLV2 checkpoint $StartingCheckpoint"
     } else {
@@ -55,6 +59,7 @@ while (($Iterations -eq 0) -or ($iteration -le $Iterations)) {
 
     $battleArgs = @(
         '-Battles', $BattlesPerIteration,
+        '-BattleWorkers', $BattleWorkers,
         '-SimulatorProcesses', $SimulatorProcesses,
         '-TeamDir', $TeamDir,
         '-LogDir', $logDir,
