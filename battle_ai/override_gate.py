@@ -42,13 +42,16 @@ def hard_loss_switch_allowed(battle: Any, model_action: int, switch_action: int)
     if selected is None:
         return False
 
-    # Do not replace a meaningful attack with a switch when the attack itself
-    # already has a substantial chance to remove the threat. A hard-loss gate
-    # is for near-certain death, not ordinary risk management.
+    # A hard-loss gate is intentionally narrow. If the learned attack can
+    # meaningfully punish the current opponent, preserve the model action even
+    # when the attacker is fragile. Only a weak/non-threatening attack may be
+    # displaced by an emergency switch.
     if int(getattr(selected, "base_power", 0) or 0) > 0:
         result = calculate_damage(active, opponent, selected, weather=weather)
         if result.reliable:
             if result.ko_probability >= 0.50:
+                return False
+            if result.percentage_max > 20.0:
                 return False
 
     incoming = []
