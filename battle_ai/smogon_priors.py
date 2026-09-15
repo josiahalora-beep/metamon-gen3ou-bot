@@ -9,24 +9,15 @@ from typing import Any
 IV = 31
 STAT_NAMES = ("hp", "atk", "def", "spa", "spd", "spe")
 NATURE_MULTIPLIERS = {
-    "adamant": {"atk": 1.1, "spa": 0.9},
-    "bold": {"def": 1.1, "atk": 0.9},
-    "brave": {"atk": 1.1, "spe": 0.9},
-    "calm": {"spd": 1.1, "atk": 0.9},
-    "careful": {"spd": 1.1, "spa": 0.9},
-    "gentle": {"spd": 1.1, "def": 0.9},
-    "hasty": {"spe": 1.1, "def": 0.9},
-    "impish": {"def": 1.1, "spa": 0.9},
-    "jolly": {"spe": 1.1, "spa": 0.9},
-    "lonely": {"atk": 1.1, "def": 0.9},
-    "mild": {"spa": 1.1, "def": 0.9},
-    "modest": {"spa": 1.1, "atk": 0.9},
-    "naive": {"spe": 1.1, "spd": 0.9},
-    "naughty": {"atk": 1.1, "spd": 0.9},
-    "quiet": {"spa": 1.1, "spe": 0.9},
-    "rash": {"spa": 1.1, "spd": 0.9},
-    "relaxed": {"def": 1.1, "spe": 0.9},
-    "sassy": {"spd": 1.1, "spe": 0.9},
+    "adamant": {"atk": 1.1, "spa": 0.9}, "bold": {"def": 1.1, "atk": 0.9},
+    "brave": {"atk": 1.1, "spe": 0.9}, "calm": {"spd": 1.1, "atk": 0.9},
+    "careful": {"spd": 1.1, "spa": 0.9}, "gentle": {"spd": 1.1, "def": 0.9},
+    "hasty": {"spe": 1.1, "def": 0.9}, "impish": {"def": 1.1, "spa": 0.9},
+    "jolly": {"spe": 1.1, "spa": 0.9}, "lonely": {"atk": 1.1, "def": 0.9},
+    "mild": {"spa": 1.1, "def": 0.9}, "modest": {"spa": 1.1, "atk": 0.9},
+    "naive": {"spe": 1.1, "spd": 0.9}, "naughty": {"atk": 1.1, "spd": 0.9},
+    "quiet": {"spa": 1.1, "spe": 0.9}, "rash": {"spa": 1.1, "spd": 0.9},
+    "relaxed": {"def": 1.1, "spe": 0.9}, "sassy": {"spd": 1.1, "spe": 0.9},
     "timid": {"spe": 1.1, "atk": 0.9},
 }
 
@@ -44,7 +35,7 @@ class SetProfile:
 
     @property
     def confidence(self) -> float:
-        return min(1.0, self.weight / 10.0)
+        return self.weight / max(1.0, self.weight + 1.0)
 
 
 def _key(value: Any) -> str:
@@ -52,7 +43,7 @@ def _key(value: Any) -> str:
 
 
 def _name(value: Any) -> str:
-    return str(value).lower().replace(" ", "")
+    return str(value).lower().replace(" ", "").replace("-", "").replace("_", "")
 
 
 def _flatten_moves(value: Any) -> tuple[str, ...]:
@@ -64,10 +55,6 @@ def _flatten_moves(value: Any) -> tuple[str, ...]:
             out.extend(_flatten_moves(item))
         return tuple(dict.fromkeys(out))
     return ()
-
-
-def _slot_contains(slot: Any, move_id: str) -> bool:
-    return move_id in _flatten_moves(slot)
 
 
 def _set_moves(raw_moves: Any) -> tuple[str, ...]:
@@ -106,23 +93,20 @@ def load_profiles(species: str, *, revealed_moves: tuple[str, ...] = (), path: P
         if not isinstance(raw, dict):
             continue
         raw_moves = raw.get("moves", [])
-        slots = raw_moves if isinstance(raw_moves, list) else [raw_moves]
         all_moves = _set_moves(raw_moves)
-        matches = sorted(move for move in revealed if any(_slot_contains(slot, move) for slot in slots))
-        incompatible = any(
-            move in revealed and move not in all_moves
-            for move in revealed
-        )
-        if incompatible:
-            continue
-        # Smogon set prior + strong evidence boost. One revealed move is enough
-        # to materially reorder the candidate set list without treating the set
-        # as certain.
-        weight = 1.0 + 3.0 * len(matches)
+        matches = sorted(move for move in revealed if move in all_moves)
+        misses = sorted(move for move in revealed if move not in all_moves)
+
+        # Preserve alternative hypotheses rather than deleting every set that
+        # does not contain a revealed move. A revealed move strongly favors
+        # compatible sets, while incompatible sets remain low-probability in
+        # case the ladder opponent is running an uncommon/non-standard set.
+        weight = 1.0 + 5.0 * len(matches)
+        weight += 2.0 * len(matches) * len(matches)
+        weight *= 0.12 ** len(misses)
         if len(matches) >= 2:
-            weight += 2.0
-        if matches and all(move in all_moves for move in revealed):
-            weight += 1.0
+            weight += 3.0
+
         ranked.append(
             SetProfile(
                 species=species,
@@ -159,8 +143,6 @@ def profile_pool(pokemon: Any, *, path: Path | None = None, limit: int = 3) -> l
 
 
 def stat_from_profile(base_stat: int, stat: str, *, ev: int = 0, level: int = 100, iv: int = IV, nature: str = "neutral") -> int:
-    # ADV stat formula. The caller may deliberately force IV=31; Smogon set EVs
-    # and nature then provide the model's expected competitive stat profile.
     stat = stat.lower()
     ev_term = max(0, min(255, int(ev))) // 4
     raw = ((2 * int(base_stat) + int(iv) + ev_term) * int(level)) // 100
@@ -178,20 +160,13 @@ def expected_stats(pokemon: Any, profile: SetProfile | None) -> dict[str, int]:
     level = int(getattr(pokemon, "level", 100) or 100)
     nature = profile.nature[0] if profile.nature else "neutral"
     return {
-        stat: stat_from_profile(
-            base.get(stat, 0),
-            stat,
-            ev=profile.evs.get(stat, 0),
-            level=level,
-            iv=IV,
-            nature=nature,
-        )
+        stat: stat_from_profile(base.get(stat, 0), stat, ev=profile.evs.get(stat, 0), level=level, iv=IV, nature=nature)
         for stat in STAT_NAMES
     }
 
 
 def likely_moves(pokemon: Any, *, path: Path | None = None, limit: int = 12) -> tuple[str, ...]:
-    pool = profile_pool(pokemon, path=path, limit=5)
+    pool = profile_pool(pokemon, path=path, limit=8)
     weights: dict[str, float] = {}
     for profile in pool:
         for move in profile.moves:
