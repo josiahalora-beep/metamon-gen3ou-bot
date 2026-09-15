@@ -7,7 +7,7 @@ from .damage import calculate_damage, type_multiplier
 
 
 _STATUS_HAZARD = {"tox", "psn", "brn", "poison", "burn"}
-_NON_DAMAGING_CATEGORIES = {"status", ""}
+_RECOVERY_OR_STALL = {"recover", "softboiled", "rest", "protect", "leechseed", "toxic", "spikes", "roar", "whirlwind"}
 
 
 def _move_type(move: Any) -> str:
@@ -23,21 +23,22 @@ def _base_power(move: Any) -> int:
     return int(getattr(move, "base_power", 0) or 0)
 
 
-def _revealed_damaging_moves(pokemon: Any) -> list[Any]:
+def _revealed_moves(pokemon: Any) -> list[Any]:
     if pokemon is None:
         return []
-    moves = list((getattr(pokemon, "moves", {}) or {}).values())
-    return [m for m in moves if _base_power(m) > 0]
+    return list((getattr(pokemon, "moves", {}) or {}).values())
+
+
+def _revealed_damaging_moves(pokemon: Any) -> list[Any]:
+    return [m for m in _revealed_moves(pokemon) if _base_power(m) > 0]
 
 
 def _team_pokemon_for_action(battle: Any, action: int) -> Any | None:
     if action < 4:
         return None
     switch_index = action - 4
-    team = [
-        p for p in (getattr(battle, "team", {}) or {}).values()
-        if not getattr(p, "fainted", False) and not getattr(p, "active", False)
-    ]
+    team = [p for p in (getattr(battle, "team", {}) or {}).values()
+            if not getattr(p, "fainted", False) and not getattr(p, "active", False)]
     team.sort(key=lambda p: str(getattr(p, "name", getattr(p, "species", ""))))
     return team[switch_index] if 0 <= switch_index < len(team) else None
 
@@ -51,12 +52,32 @@ def _status_name(pokemon: Any) -> str:
     return str(getattr(value, "name", value)).lower()
 
 
-def incoming_type_profile(opponent: Any, defender: Any) -> dict:
-    """Summarize type-level exposure to revealed opponent attacks.
+def incoming_damage_profile(opponent: Any, defender: Any, *, weather: str = "") -> dict:
+    """Estimate the worst revealed attack against a candidate switch.
 
-    This intentionally ignores unrevealed moves and unknown damage statistics.
-    It is a risk signal, not a damage prediction.
+    Hidden stats use the conservative Gen 3 estimator. Unknown/unrevealed moves
+    never contribute to the profile.
     """
+    moves = _revealed_damaging_moves(opponent)
+    if defender is None or not moves:
+        return {"known_moves": 0, "max_damage_pct": None, "guaranteed_ko": False, "moves": []}
+    results = []
+    for move in moves:
+        result = calculate_damage(opponent, defender, move, weather=weather)
+        if result.reliable:
+            results.append((result.percentage_max, result.ko_probability, _move_id(move)))
+    if not results:
+        return {"known_moves": len(moves), "max_damage_pct": None, "guaranteed_ko": False, "moves": [_move_id(m) for m in moves]}
+    worst = max(results, key=lambda x: x[0])
+    return {
+        "known_moves": len(moves),
+        "max_damage_pct": worst[0],
+        "guaranteed_ko": any(r[1] >= 1.0 for r in results),
+        "moves": [_move_id(m) for m in moves],
+    }
+
+
+def incoming_type_profile(opponent: Any, defender: Any) -> dict:
     moves = _revealed_damaging_moves(opponent)
     if defender is None or not moves:
         return {"known_moves": 0, "max_multiplier": None, "min_multiplier": None, "super_effective": False}
@@ -72,12 +93,17 @@ def incoming_type_profile(opponent: Any, defender: Any) -> dict:
     }
 
 
-def _dangerous_pokemon(pokemon: Any, opponent: Any) -> bool:
+def _weather(battle: Any) -> str:
+    return ",".join(str(getattr(x, "name", x)).lower() for x in (getattr(battle, "weather", {}) or {}).keys())
+
+
+def _dangerous_pokemon(pokemon: Any, opponent: Any, *, battle: Any = None) -> bool:
     if pokemon is None or getattr(pokemon, "fainted", False):
         return False
     hp = _current_hp_fraction(pokemon)
     status = _status_name(pokemon)
     profile = incoming_type_profile(opponent, pokemon)
+    damage = incoming_damage_profile(opponent, pokemon, weather=_weather(battle) if battle else "")
     if not profile["known_moves"]:
         return False
     if hp <= 0.15:
@@ -86,13 +112,16 @@ def _dangerous_pokemon(pokemon: Any, opponent: Any) -> bool:
         return True
     if hp <= 0.25 and profile["super_effective"]:
         return True
+    if damage["guaranteed_ko"]:
+        return True
     return False
 
 
-def _switch_safety_score(pokemon: Any, opponent: Any) -> tuple[float, dict]:
+def _switch_safety_score(pokemon: Any, opponent: Any, *, battle: Any = None) -> tuple[float, dict]:
     profile = incoming_type_profile(opponent, pokemon)
+    damage = incoming_damage_profile(opponent, pokemon, weather=_weather(battle) if battle else "")
     if not profile["known_moves"]:
-        return (0.0, profile)
+        return (0.0, {**profile, **damage})
     max_mult = float(profile["max_multiplier"] or 1.0)
     hp = _current_hp_fraction(pokemon)
     status = _status_name(pokemon)
@@ -103,7 +132,11 @@ def _switch_safety_score(pokemon: Any, opponent: Any) -> tuple[float, dict]:
         score += 2.0
     elif max_mult < 1.0:
         score += 1.0
-    return score, profile
+    if damage["guaranteed_ko"]:
+        score -= 5.0
+    elif damage["max_damage_pct"] is not None:
+        score -= min(4.0, float(damage["max_damage_pct"]) / 100.0 * 3.0)
+    return score, {**profile, **damage}
 
 
 @dataclass(frozen=True)
@@ -113,108 +146,102 @@ class SafetyDecision:
     hard: bool = False
 
 
-def safety_override(battle: Any, legal_actions: list[int], model_action: int) -> SafetyDecision:
-    """Return only high-confidence anti-throw corrections.
+def _ordered_moves(active: Any) -> list[Any]:
+    return sorted(_revealed_moves(active), key=_move_id)
 
-    The safety layer deliberately does not invent opponent stats or sets. It
-    only reacts to information already present in poke-env (revealed moves,
-    known HP/status, and known boosts) and otherwise leaves the model alone.
-    """
+
+def safety_override(battle: Any, legal_actions: list[int], model_action: int) -> SafetyDecision:
+    """Return only high-confidence anti-throw corrections from revealed data."""
     active = getattr(battle, "active_pokemon", None)
     opponent = getattr(battle, "opponent_active_pokemon", None)
     if active is None or opponent is None:
         return SafetyDecision(None)
 
-    # 1) Never switch a critically compromised team member into a known-danger
-    # position when another legal switch is materially safer.
     if model_action >= 4 and model_action in legal_actions:
         chosen_target = _team_pokemon_for_action(battle, model_action)
-        if _dangerous_pokemon(chosen_target, opponent):
-            alternatives: list[tuple[float, int, dict]] = []
+        if _dangerous_pokemon(chosen_target, opponent, battle=battle):
+            alternatives = []
             for action in legal_actions:
                 if action < 4 or action == model_action:
                     continue
                 candidate = _team_pokemon_for_action(battle, action)
                 if candidate is None:
                     continue
-                score, profile = _switch_safety_score(candidate, opponent)
+                score, profile = _switch_safety_score(candidate, opponent, battle=battle)
                 alternatives.append((score, int(action), profile))
             if alternatives:
-                current_score, current_profile = _switch_safety_score(chosen_target, opponent)
+                current_score, current_profile = _switch_safety_score(chosen_target, opponent, battle=battle)
                 best_score, best_action, best_profile = max(alternatives, key=lambda item: item[0])
                 if best_score > current_score + 1.0:
                     return SafetyDecision(
                         best_action,
-                        reason=(
-                            f"anti-throw: refused switch into compromised {getattr(chosen_target, 'species', 'pokemon')} "
-                            f"(HP={_current_hp_fraction(chosen_target):.0%}, status={_status_name(chosen_target) or 'healthy'}); "
-                            f"safer switch available with known-move max type risk "
-                            f"{best_profile.get('max_multiplier')}x vs {current_profile.get('max_multiplier')}x"
-                        ),
+                        reason=(f"anti-throw: refused switch into compromised {getattr(chosen_target, 'species', 'pokemon')} "
+                                f"(HP={_current_hp_fraction(chosen_target):.0%}); safer switch has estimated worst revealed damage "
+                                f"{best_profile.get('max_damage_pct')}% vs {current_profile.get('max_damage_pct')}%"),
                         hard=True,
                     )
 
-    # 2) If the active Pokemon is critically compromised, don't spend the turn
-    # on another move when a materially safer legal switch exists.
-    if model_action < 4 and _dangerous_pokemon(active, opponent):
-        profile = incoming_type_profile(opponent, active)
-        alternatives: list[tuple[float, int, dict]] = []
+    if model_action < 4 and _dangerous_pokemon(active, opponent, battle=battle):
+        alternatives = []
         for action in legal_actions:
             if action < 4:
                 continue
             candidate = _team_pokemon_for_action(battle, action)
             if candidate is None:
                 continue
-            score, candidate_profile = _switch_safety_score(candidate, opponent)
-            alternatives.append((score, int(action), candidate_profile))
+            score, profile = _switch_safety_score(candidate, opponent, battle=battle)
+            alternatives.append((score, int(action), profile))
         if alternatives:
             best_score, best_action, best_profile = max(alternatives, key=lambda item: item[0])
-            active_score, _ = _switch_safety_score(active, opponent)
+            active_score, active_profile = _switch_safety_score(active, opponent, battle=battle)
             if best_score > active_score + 0.75:
                 return SafetyDecision(
                     best_action,
-                    reason=(
-                        f"anti-throw: active {getattr(active, 'species', 'pokemon')} is compromised "
-                        f"(HP={_current_hp_fraction(active):.0%}, status={_status_name(active) or 'healthy'}); "
-                        f"safer switch has known-move max type risk {best_profile.get('max_multiplier')}x "
-                        f"vs active {profile.get('max_multiplier')}x"
-                    ),
+                    reason=(f"anti-throw: active {getattr(active, 'species', 'pokemon')} is compromised "
+                            f"(HP={_current_hp_fraction(active):.0%}); safer switch estimated at "
+                            f"{best_profile.get('max_damage_pct')}% worst revealed damage vs "
+                            f"{active_profile.get('max_damage_pct')}%"),
                     hard=True,
                 )
 
-    # 3) Emergency response to a revealed setup sweeper. Only override a
-    # non-damaging move when we can calculate a reliable damaging alternative.
     boosts = getattr(opponent, "boosts", {}) or {}
     offensive_boost = max(int(boosts.get("atk", 0) or 0), int(boosts.get("spa", 0) or 0), int(boosts.get("spe", 0) or 0))
     if offensive_boost >= 2 and model_action < 4:
-        active_moves = list((getattr(active, "moves", {}) or {}).values())
-        selected_move = None
-        if 0 <= model_action < 4:
-            ordered = sorted(active_moves, key=lambda m: _move_id(m))
-            if model_action < len(ordered):
-                selected_move = ordered[model_action]
-        if selected_move is None or _base_power(selected_move) <= 0:
-            candidates: list[tuple[int, int, Any]] = []
-            for idx, move in enumerate(sorted(active_moves, key=lambda m: _move_id(m))[:4]):
+        moves = _ordered_moves(active)
+        selected = moves[model_action] if model_action < len(moves) else None
+        if selected is None or _base_power(selected) <= 0:
+            candidates = []
+            for idx, move in enumerate(moves[:4]):
                 if _base_power(move) <= 0:
                     continue
-                result = calculate_damage(
-                    active,
-                    opponent,
-                    move,
-                    weather="".join(str(x) for x in (getattr(battle, "weather", {}) or {}).keys()),
-                )
+                result = calculate_damage(active, opponent, move, weather=_weather(battle))
                 if result.reliable:
+                    candidates.append((result.max_damage, idx, move, result))
+            if candidates:
+                _, best_idx, best_move, result = max(candidates, key=lambda x: x[0])
+                return SafetyDecision(best_idx, reason=(f"setup emergency: opponent has +{offensive_boost} offensive boost; "
+                                f"use {getattr(best_move, 'name', getattr(best_move, 'id', 'attack'))} "
+                                f"({result.percentage_max:.0f}% estimated max damage)"), hard=True)
+
+    # 4) Do not knowingly spend a passive turn against a revealed stall core
+    # when the opponent is already in KO range of a reliable attack.
+    opponent_hp = _current_hp_fraction(opponent)
+    revealed_ids = {_move_id(m) for m in _revealed_moves(opponent)}
+    has_stall_tools = bool(revealed_ids & _RECOVERY_OR_STALL)
+    if model_action < 4 and opponent_hp <= 0.30 and has_stall_tools:
+        moves = _ordered_moves(active)
+        selected = moves[model_action] if model_action < len(moves) else None
+        if selected is None or _base_power(selected) <= 0:
+            candidates = []
+            for idx, move in enumerate(moves[:4]):
+                if _base_power(move) <= 0:
+                    continue
+                result = calculate_damage(active, opponent, move, weather=_weather(battle))
+                if result.reliable and result.ko_probability >= 1.0:
                     candidates.append((result.max_damage, idx, move))
             if candidates:
-                _, best_idx, best_move = max(candidates, key=lambda x: x[0])
-                return SafetyDecision(
-                    best_idx,
-                    reason=(
-                        f"setup emergency: opponent has +{offensive_boost} offensive boost; "
-                        f"replace non-damaging model action with {getattr(best_move, 'name', getattr(best_move, 'id', 'attack'))}"
-                    ),
-                    hard=True,
-                )
+                _, idx, move = max(candidates, key=lambda x: x[0])
+                return SafetyDecision(idx, reason=(f"stall conversion: revealed recovery/hazard tools {sorted(revealed_ids & _RECOVERY_OR_STALL)} "
+                                f"and opponent is at {opponent_hp:.0%}; take guaranteed KO"), hard=True)
 
     return SafetyDecision(None)
