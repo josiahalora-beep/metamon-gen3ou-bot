@@ -113,16 +113,19 @@ def _revealed_move_types(pokemon: Any) -> tuple[str, ...]:
 
 def _threat_profile(pokemon: Any) -> tuple[bool, bool, str, tuple[str, ...]]:
     profile = infer_profile(pokemon)
+    base = {str(k).lower(): int(v) for k, v in (getattr(pokemon, "base_stats", {}) or {}).items() if v is not None}
+    base_spa = base.get("spa", 0)
+    base_atk = base.get("atk", 0)
+    fallback_special = base_spa >= max(90, base_atk + 10)
+    fallback_physical = base_atk >= max(100, base_spa + 10)
     if profile is None:
-        atk = _boosted_stat(pokemon, "atk")
-        spa = _boosted_stat(pokemon, "spa")
-        return spa >= atk and spa >= 90, atk > spa and atk >= 100, "species/base-stat prior", ()
+        return fallback_special, fallback_physical, "species/base-stat prior", ()
     moves = set(profile.moves)
     special = {"surf", "hydropump", "thunderbolt", "thunder", "icebeam", "psychic", "fireblast", "flamethrower", "gigadrain", "hiddenpower"}
     physical = {"earthquake", "rockslide", "bodyslam", "return", "doubleedge", "focuspunch", "brickbreak", "explosion", "meteormash", "sludgebomb", "megahorn", "drillpeck"}
     spa_score = sum(m in special for m in moves) + (2 if profile.evs.get("spa", 0) >= 100 else 0)
     atk_score = sum(m in physical for m in moves) + (2 if profile.evs.get("atk", 0) >= 100 else 0)
-    return spa_score >= atk_score, atk_score > spa_score, profile.name, profile.evidence
+    return spa_score >= atk_score or fallback_special, atk_score > spa_score or fallback_physical, profile.name, profile.evidence
 
 
 def hidden_threat_switch_override(battle: Any, legal_actions: list[int], model_action: int,
@@ -141,11 +144,17 @@ def hidden_threat_switch_override(battle: Any, legal_actions: list[int], model_a
     special_threat, physical_threat, profile_name, evidence = _threat_profile(opponent)
     active_speed = _boosted_stat(active, "spe")
     opponent_speed = _boosted_stat(opponent, "spe")
-    faster = opponent_speed > active_speed * 1.03
+    opponent_base = {str(k).lower(): int(v) for k, v in (getattr(opponent, "base_stats", {}) or {}).items() if v is not None}
+    active_base = {str(k).lower(): int(v) for k, v in (getattr(active, "base_stats", {}) or {}).items() if v is not None}
+    faster = opponent_speed > active_speed * 1.03 or (
+        opponent_base.get("spe", 0) > active_base.get("spe", 0)
+        and opponent_base.get("spe", 0) >= active_base.get("spe", 0) + 10
+    )
     if not faster or not (special_threat or physical_threat):
         return None, ""
 
-    bulk_stat = "spd" if special_threat and not physical_threat else "def"
+    use_special = special_threat and not physical_threat
+    bulk_stat = "spd" if use_special else "def"
     active_bulk = _profile_stat(active, "hp") + _boosted_stat(active, bulk_stat)
     revealed_types = _revealed_move_types(opponent)
     active_matchup = min((_type_multiplier(t, active) for t in revealed_types), default=1.0)
@@ -166,7 +175,15 @@ def hidden_threat_switch_override(battle: Any, legal_actions: list[int], model_a
         matchup = min((_type_multiplier(t, candidate) for t in revealed_types), default=1.0)
         bulk_gain = candidate_bulk - active_bulk
         matchup_gain = active_matchup - matchup
+        candidate_base = {str(k).lower(): int(v) for k, v in (getattr(candidate, "base_stats", {}) or {}).items() if v is not None}
+
         score = max(0.0, bulk_gain) / 6.0 + matchup_gain * 55.0
+        # Strong deterministic signal using exact Gen 3 base stats. This is
+        # intentionally independent of guessed hidden moves.
+        if use_special and candidate_base.get("spd", 0) >= opponent_base.get("spa", 0) and candidate_base.get("spd", 0) >= active_base.get("spd", 0) + 20:
+            score += 30.0
+        if use_special and candidate_base.get("spd", 0) >= 120:
+            score += 12.0
         if matchup <= 0.5:
             score += 18.0
         if matchup == 0.0:
