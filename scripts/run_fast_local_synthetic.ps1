@@ -36,10 +36,12 @@ try {
         throw 'Fast Showdown server did not open port 8000 within 30 seconds.'
     }
 
+    # Local Showdown is launched with --no-security. Use a non-secret
+    # placeholder because PowerShell can drop an empty-string argument.
     $Args = @(
         'scripts\play_local_fast_synthetic.py',
         '--username', $Username,
-        '--password', '',
+        '--password', 'local',
         '--team-dir', $TeamDir,
         '--battles', $Battles,
         '--enable-battle-ai',
