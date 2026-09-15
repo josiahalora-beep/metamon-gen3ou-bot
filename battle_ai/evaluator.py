@@ -137,6 +137,40 @@ class TacticalEvaluator:
             return False
         return result.percentage_max < 15.0 and result.ko_probability <= 0.0
 
+    @staticmethod
+    def _broad_safety_allowed(battle: Any, model_action: int) -> bool:
+        """Keep low-HP heuristic switches from overriding merely because HP is low.
+
+        Immediate-loss and other hard mechanical guards run independently. For
+        the broad safety heuristic, a healthy active gets normal treatment;
+        a sub-35% attacking active must first be facing a demonstrable KO risk.
+        """
+        if model_action >= 4:
+            return True
+        active = getattr(battle, "active_pokemon", None)
+        if active is None:
+            return True
+        try:
+            hp = float(getattr(active, "current_hp_fraction", 1.0) or 1.0)
+        except (TypeError, ValueError):
+            hp = 1.0
+        if hp > 0.35:
+            return True
+        opponent = getattr(battle, "opponent_active_pokemon", None)
+        if opponent is None:
+            return False
+        weather = ",".join(
+            str(getattr(k, "name", k)).lower()
+            for k in (getattr(battle, "weather", {}) or {}).keys()
+        )
+        for move in (getattr(opponent, "moves", {}) or {}).values():
+            if int(getattr(move, "base_power", 0) or 0) <= 0:
+                continue
+            result = calculate_damage(opponent, active, move, weather=weather)
+            if result.reliable and float(getattr(result, "ko_probability", 0.0) or 0.0) >= 1.0:
+                return True
+        return hp <= 0.15
+
     def evaluate(self, battle: Any, legal_actions: list[int], model_action: int) -> tuple[int, list[ActionEvaluation]]:
         state = snapshot_battle(battle, legal_actions)
         active = getattr(battle, "active_pokemon", None)
@@ -189,6 +223,13 @@ class TacticalEvaluator:
             self._apply_override(evaluations, chosen, sequence_reason)
 
         if safety_action is None:
+            guard_action, guard_reason = immediate_loss_guard(battle, list(legal_set), chosen)
+            if guard_action is not None and guard_action in legal_set and guard_action != chosen:
+                chosen = guard_action
+                safety_action = guard_action
+                self._apply_override(evaluations, chosen, guard_reason)
+
+        if safety_action is None and self._broad_safety_allowed(battle, chosen):
             decision = safety_override(battle, list(legal_set), chosen)
             if decision.action is not None and decision.action in legal_set and decision.action != chosen and self._allow_override(battle, chosen, decision.action):
                 chosen = decision.action
@@ -237,15 +278,13 @@ class TacticalEvaluator:
                         )
                         break
 
-        # This is the final mechanical sanity check. Unlike the broader
-        # heuristics above, it acts only on a provable immediate loss.
         guard_action, guard_reason = immediate_loss_guard(battle, list(legal_set), chosen)
         if guard_action is not None and guard_action in legal_set and guard_action != chosen:
             chosen = guard_action
             safety_action = guard_action
             self._apply_override(evaluations, chosen, guard_reason)
 
-        if self.override_mode in {"verifier", "rerank"} and safety_action is None:
+        if self.override_mode in {"verifier", "rerank"} and safety_action is None and self._broad_safety_allowed(battle, chosen):
             decision = safety_override(battle, list(legal_set), chosen)
             if decision.action is not None and decision.action in legal_set and decision.action != chosen and self._allow_override(battle, chosen, decision.action):
                 chosen = decision.action
