@@ -8,6 +8,7 @@ from pathlib import Path
 
 from benchmark_counterfactual import battle_from_snapshot
 from counterfactual_gen3 import _legal_actions
+from metamon.interface import consistent_pokemon_order
 
 
 def _canonical_name(value):
@@ -84,10 +85,27 @@ def _actual_transition(before, after):
     }
 
 
+def _canonical_switch_slots(battle: object) -> list[object]:
+    """Use Metamon's exact switch ordering contract (alphabetical canonical order)."""
+    team = [
+        p for p in (getattr(battle, "team", {}) or {}).values()
+        if not getattr(p, "fainted", False) and not getattr(p, "active", False)
+    ]
+    try:
+        return list(consistent_pokemon_order(team))
+    except ValueError:
+        return sorted(
+            team,
+            key=lambda p: _canonical_name(
+                getattr(p, "species", getattr(p, "name", ""))
+            ),
+        )
+
+
 def _switch_target_name(battle, action):
     if action < 4:
         return ""
-    slots = list(getattr(battle, "available_switches", []) or [])
+    slots = _canonical_switch_slots(battle)
     idx = action - 4
     if 0 <= idx < len(slots):
         return str(getattr(slots[idx], "species", getattr(slots[idx], "name", "")))
@@ -136,9 +154,6 @@ def _decode_rows(database: Path, limit: int):
     finally:
         db.close()
 
-    # A logical battle turn can have multiple stored decision rows. Keep the
-    # latest row for each (battle_id, turn) so the transition compares the last
-    # decision state for that logical turn to the next logical turn.
     latest = {}
     decode_errors = 0
     for row_id, battle_id, turn, raw, raw_candidates, chosen_action, final_action, reasoning_json in raw_rows:
@@ -292,6 +307,8 @@ def main() -> None:
         "override_sources": payload["override_sources"],
         "actual_opponent_responses": payload["actual_opponent_responses"],
         "switch_overrides": payload["switch_overrides"],
+        "switch_execution_matches": payload["switch_execution_matches"],
+        "switch_execution_failures": payload["switch_execution_failures"],
         "switch_execution_match_rate": payload["switch_execution_match_rate"],
         "switches_followed_by_observed_pressure": payload["switches_followed_by_observed_pressure"],
         "successful_switch_survival": payload["successful_switch_survival"],
