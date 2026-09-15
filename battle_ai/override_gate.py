@@ -28,7 +28,7 @@ def _weather(battle: Any) -> str:
 
 
 def hard_loss_switch_allowed(battle: Any, model_action: int, switch_action: int) -> bool:
-    """Permit a switch override only when the learned action has a revealed guaranteed KO against it."""
+    """Permit a switch override only for a demonstrated immediate loss."""
     if model_action >= 4 or switch_action < 4:
         return False
     active = getattr(battle, "active_pokemon", None)
@@ -36,20 +36,26 @@ def hard_loss_switch_allowed(battle: Any, model_action: int, switch_action: int)
     if active is None or opponent is None or getattr(active, "fainted", False):
         return False
 
+    weather = _weather(battle)
     moves = _moves(active)
     selected = moves[model_action] if 0 <= model_action < len(moves) else None
     if selected is None:
         return False
+
+    # Do not replace a meaningful attack with a switch when the attack itself
+    # already has a substantial chance to remove the threat. A hard-loss gate
+    # is for near-certain death, not ordinary risk management.
     if int(getattr(selected, "base_power", 0) or 0) > 0:
-        result = calculate_damage(active, opponent, selected, weather=_weather(battle))
-        if result.reliable and result.ko_probability >= 1.0:
-            return False
+        result = calculate_damage(active, opponent, selected, weather=weather)
+        if result.reliable:
+            if result.ko_probability >= 0.50:
+                return False
 
     incoming = []
     for move in (getattr(opponent, "moves", {}) or {}).values():
         if int(getattr(move, "base_power", 0) or 0) <= 0:
             continue
-        result = calculate_damage(opponent, active, move, weather=_weather(battle))
+        result = calculate_damage(opponent, active, move, weather=weather)
         if result.reliable:
             incoming.append(result)
     if not any(r.ko_probability >= 1.0 for r in incoming):
@@ -64,7 +70,7 @@ def hard_loss_switch_allowed(battle: Any, model_action: int, switch_action: int)
     for move in (getattr(opponent, "moves", {}) or {}).values():
         if int(getattr(move, "base_power", 0) or 0) <= 0:
             continue
-        result = calculate_damage(opponent, candidate, move, weather=_weather(battle))
+        result = calculate_damage(opponent, candidate, move, weather=weather)
         if result.reliable:
             candidate_results.append(result)
     return not any(r.ko_probability >= 1.0 for r in candidate_results)
