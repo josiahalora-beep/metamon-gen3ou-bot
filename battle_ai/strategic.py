@@ -1,11 +1,9 @@
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Any
 
 from .damage import calculate_damage, type_multiplier
-from metamon.interface import consistent_pokemon_order
-
+from metamon.interface import consistent_move_order, consistent_pokemon_order
 
 _STATUS_HAZARD = {"tox", "psn", "brn", "poison", "burn"}
 _RECOVERY_OR_STALL = {"recover", "softboiled", "rest", "protect", "leechseed", "toxic", "spikes", "roar", "whirlwind"}
@@ -35,12 +33,7 @@ def _revealed_damaging_moves(pokemon: Any) -> list[Any]:
 
 
 def _team_pokemon_for_action(battle: Any, action: int) -> Any | None:
-    """Resolve an action ID using Metamon's canonical Pokémon ordering.
-
-    This must match TacticalEvaluator's switch-slot ordering exactly.  Never
-    independently sort by ``name``/``species`` here: formes and normalized
-    names are handled by ``consistent_pokemon_order``.
-    """
+    """Resolve a switch action using Metamon's exact canonical ordering."""
     if action < 4:
         return None
     switch_index = action - 4
@@ -65,11 +58,7 @@ def _status_name(pokemon: Any) -> str:
 
 
 def incoming_damage_profile(opponent: Any, defender: Any, *, weather: str = "") -> dict:
-    """Estimate the worst revealed attack against a candidate switch.
-
-    Hidden stats use the conservative Gen 3 estimator. Unknown/unrevealed moves
-    never contribute to the profile.
-    """
+    """Estimate the worst revealed attack against a candidate switch."""
     moves = _revealed_damaging_moves(opponent)
     if defender is None or not moves:
         return {"known_moves": 0, "max_damage_pct": None, "guaranteed_ko": False, "moves": []}
@@ -132,10 +121,12 @@ def _dangerous_pokemon(pokemon: Any, opponent: Any, *, battle: Any = None) -> bo
 def _switch_safety_score(pokemon: Any, opponent: Any, *, battle: Any = None) -> tuple[float, dict]:
     profile = incoming_type_profile(opponent, pokemon)
     damage = incoming_damage_profile(opponent, pokemon, weather=_weather(battle) if battle else "")
-    if not profile["known_moves"]:
-        return (0.0, {**profile, **damage})
-    max_mult = float(profile["max_multiplier"] or 1.0)
     hp = _current_hp_fraction(pokemon)
+    if not profile["known_moves"]:
+        # With no revealed attack, preserve the healthier roster member rather
+        # than pretending we can quantify an unknown matchup.
+        return (hp, {**profile, **damage})
+    max_mult = float(profile["max_multiplier"] or 1.0)
     status = _status_name(pokemon)
     score = 2.0 * hp - 2.5 * max_mult
     if status in _STATUS_HAZARD:
@@ -159,7 +150,18 @@ class SafetyDecision:
 
 
 def _ordered_moves(active: Any) -> list[Any]:
-    return sorted(_revealed_moves(active), key=_move_id)
+    moves = _revealed_moves(active)
+    try:
+        return consistent_move_order(moves)
+    except ValueError:
+        return sorted(moves, key=_move_id)
+
+
+def _selected_move(active: Any, action: int) -> Any | None:
+    if action < 0 or action >= 4:
+        return None
+    moves = _ordered_moves(active)
+    return moves[action] if action < len(moves) else None
 
 
 def safety_override(battle: Any, legal_actions: list[int], model_action: int) -> SafetyDecision:
@@ -168,6 +170,38 @@ def safety_override(battle: Any, legal_actions: list[int], model_action: int) ->
     opponent = getattr(battle, "opponent_active_pokemon", None)
     if active is None or opponent is None:
         return SafetyDecision(None)
+
+    # Preserve a low-health active when the model is not taking a mechanically
+    # guaranteed KO. This is intentionally narrow: an actual guaranteed KO is
+    # allowed, and a useful hard safety correction below can still fire.
+    if 0 <= model_action < 4 and _current_hp_fraction(active) <= 0.35:
+        selected = _selected_move(active, model_action)
+        guaranteed_ko = False
+        if selected is not None and _base_power(selected) > 0:
+            result = calculate_damage(active, opponent, selected, weather=_weather(battle))
+            guaranteed_ko = result.reliable and result.ko_probability >= 1.0
+        if not guaranteed_ko:
+            alternatives = []
+            for action in legal_actions:
+                if action < 4:
+                    continue
+                candidate = _team_pokemon_for_action(battle, action)
+                if candidate is None:
+                    continue
+                score, profile = _switch_safety_score(candidate, opponent, battle=battle)
+                if profile.get("guaranteed_ko"):
+                    continue
+                alternatives.append((score, int(action), profile, candidate))
+            if alternatives:
+                best_score, best_action, best_profile, best_target = max(alternatives, key=lambda x: x[0])
+                return SafetyDecision(
+                    best_action,
+                    reason=(f"low-HP preservation: refused non-guaranteed attack with active "
+                            f"{getattr(active, 'species', 'pokemon')} at {_current_hp_fraction(active):.0%}; "
+                            f"preserve it by switching to {getattr(best_target, 'species', 'pokemon')} "
+                            f"(HP={_current_hp_fraction(best_target):.0%})"),
+                    hard=True,
+                )
 
     if model_action >= 4 and model_action in legal_actions:
         chosen_target = _team_pokemon_for_action(battle, model_action)
@@ -219,11 +253,10 @@ def safety_override(battle: Any, legal_actions: list[int], model_action: int) ->
     boosts = getattr(opponent, "boosts", {}) or {}
     offensive_boost = max(int(boosts.get("atk", 0) or 0), int(boosts.get("spa", 0) or 0), int(boosts.get("spe", 0) or 0))
     if offensive_boost >= 2 and model_action < 4:
-        moves = _ordered_moves(active)
-        selected = moves[model_action] if model_action < len(moves) else None
+        selected = _selected_move(active, model_action)
         if selected is None or _base_power(selected) <= 0:
             candidates = []
-            for idx, move in enumerate(moves[:4]):
+            for idx, move in enumerate(_ordered_moves(active)[:4]):
                 if _base_power(move) <= 0:
                     continue
                 result = calculate_damage(active, opponent, move, weather=_weather(battle))
@@ -239,11 +272,10 @@ def safety_override(battle: Any, legal_actions: list[int], model_action: int) ->
     revealed_ids = {_move_id(m) for m in _revealed_moves(opponent)}
     has_stall_tools = bool(revealed_ids & _RECOVERY_OR_STALL)
     if model_action < 4 and opponent_hp <= 0.30 and has_stall_tools:
-        moves = _ordered_moves(active)
-        selected = moves[model_action] if model_action < len(moves) else None
+        selected = _selected_move(active, model_action)
         if selected is None or _base_power(selected) <= 0:
             candidates = []
-            for idx, move in enumerate(moves[:4]):
+            for idx, move in enumerate(_ordered_moves(active)[:4]):
                 if _base_power(move) <= 0:
                     continue
                 result = calculate_damage(active, opponent, move, weather=_weather(battle))
