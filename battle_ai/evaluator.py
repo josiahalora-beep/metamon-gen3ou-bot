@@ -11,6 +11,7 @@ from .threat_response import hidden_threat_switch_override
 from .opponent_model import OpponentModel
 from .response_search import ResponseSearcher
 from .override_gate import hard_loss_switch_allowed
+from .intelligence_guard import immediate_loss_guard
 from metamon.interface import consistent_move_order, consistent_pokemon_order
 
 
@@ -118,9 +119,6 @@ class TacticalEvaluator:
         text = (reason or "").lower()
         if "hazard plan:" not in text:
             return True
-        # Gen 3 has four move actions (0..3). The old chained comparison
-        # `0 <= action < 4 < len(move_slots)` was impossible for a normal
-        # four-slot moveset, which accidentally allowed every hazard override.
         if not (0 <= int(model_action) < 4 and int(model_action) < len(move_slots)):
             return True
         selected = move_slots[int(model_action)]
@@ -137,8 +135,6 @@ class TacticalEvaluator:
         result = calculate_damage(active, target, selected, weather=weather)
         if not result.reliable:
             return False
-        # Preserve the learned damaging decision unless the attack is truly
-        # non-threatening; hazards are strategic refinement, not a hard command.
         return result.percentage_max < 15.0 and result.ko_probability <= 0.0
 
     def evaluate(self, battle: Any, legal_actions: list[int], model_action: int) -> tuple[int, list[ActionEvaluation]]:
@@ -240,6 +236,14 @@ class TacticalEvaluator:
                             evaluation.reason + " | " + response_reason,
                         )
                         break
+
+        # This is the final mechanical sanity check. Unlike the broader
+        # heuristics above, it acts only on a provable immediate loss.
+        guard_action, guard_reason = immediate_loss_guard(battle, list(legal_set), chosen)
+        if guard_action is not None and guard_action in legal_set and guard_action != chosen:
+            chosen = guard_action
+            safety_action = guard_action
+            self._apply_override(evaluations, chosen, guard_reason)
 
         if self.override_mode in {"verifier", "rerank"} and safety_action is None:
             decision = safety_override(battle, list(legal_set), chosen)
