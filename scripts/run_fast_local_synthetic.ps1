@@ -1,5 +1,6 @@
 param(
     [int]$Battles = 100,
+    [int]$BattleWorkers = 2,
     [int]$SimulatorProcesses = 4,
     [string]$Username = 'LocalSynthetic-A',
     [string]$OpponentUsername = 'LocalSynthetic-B',
@@ -18,6 +19,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $StartScript = Join-Path $RepoRoot 'scripts\start_fast_local_showdown.ps1'
+if ($BattleWorkers -lt 1) { throw 'BattleWorkers must be at least 1.' }
+if ($BattleWorkers -gt $Battles) { $BattleWorkers = $Battles }
 
 $ServerJob = Start-Process -FilePath 'powershell' -ArgumentList @(
     '-NoProfile',
@@ -49,6 +52,7 @@ try {
         '--opponent-username', $OpponentUsername,
         '--team-dir', $TeamDir,
         '--battles', $Battles,
+        '--workers', $BattleWorkers,
         '--checkpoint', $Checkpoint,
         '--temperature', $Temperature,
         '--trajectory-dir', $TrajectoryDir,
@@ -65,7 +69,7 @@ try {
         $Args += '--decision-debug'
     }
 
-    Write-Host "Running $Battles local curriculum battles with independently randomized teams..."
+    Write-Host "Running $Battles local curriculum battles across $BattleWorkers parallel workers with independently randomized teams..."
     python @Args
     if ($LASTEXITCODE -ne 0) {
         throw "Local curriculum runner exited with code $LASTEXITCODE."
