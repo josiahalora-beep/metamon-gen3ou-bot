@@ -141,9 +141,10 @@ class StrategicPlanTests(unittest.TestCase):
         dd = FakeMove("dragondance")
         dragon_attack = FakeMove("dragonclaw", 80, "Dragon")
         mence = self._pokemon("mence", moves=[dd, dragon_attack], types=("Dragon", "Flying"), hp=100)
+        bad_switch = self._pokemon("zzzz", types=("Normal",), hp=100)
         foe1 = self._pokemon("blissey", types=("Normal",))
         foe2 = self._pokemon("metagross", types=("Steel", "Psychic"))
-        team = {"current": current, "mence": mence}
+        team = {"current": current, "mence": mence, "bad": bad_switch}
         battle = self._battle(current, foe1, [foe1, foe2], team=team)
         battle.available_moves = list(current.moves.values())
 
@@ -155,9 +156,9 @@ class StrategicPlanTests(unittest.TestCase):
 
         with patch("battle_ai.strategic_plan.calculate_damage", side_effect=fake_damage):
             with patch("battle_ai.strategic_plan._incoming_safe", return_value=(True, 10.0, "known attack")):
-                action, reason = strategic_opportunity_override(battle, [0, 4], 4)
+                action, reason = strategic_opportunity_override(battle, [0, 4, 5], 5)
 
-        # Current fixture uses consistent alphabetical switch ordering: mence is action 4.
+        # consistent alphabetical switch ordering puts mence before zzzz, so mence is action 4.
         self.assertEqual(action, 4)
         self.assertIn("win-condition activation", reason)
 
