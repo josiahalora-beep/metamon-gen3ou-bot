@@ -143,7 +143,6 @@ def audit(database: Path, output: Path, limit: int = 0) -> dict:
     response_counts = Counter(r["transition"]["opponent_response"] for r in records)
     switches = [r for r in records if r["final_kind"] == "switch" and r["switch_execution_match"] is not None]
     matched = [r for r in switches if r["switch_execution_match"]]
-    failed = [r for r in switches if not r["switch_execution_match"]]
     payload = {
         "evaluated_real_transitions": len(records),
         "errors": errors,
@@ -151,7 +150,7 @@ def audit(database: Path, output: Path, limit: int = 0) -> dict:
         "actual_opponent_responses": dict(response_counts),
         "switch_overrides": len(switches),
         "switch_execution_matches": len(matched),
-        "switch_execution_failures": len(failed),
+        "switch_execution_failures": len(switches) - len(matched),
         "switch_execution_match_rate": (len(matched) / len(switches)) if switches else None,
         "switches_followed_by_observed_pressure": sum(r["transition"]["opponent_response"] == "observed_pressure_or_effect" for r in matched),
         "successful_switch_survival": sum(not r["transition"]["our_fainted"] for r in matched),
@@ -170,12 +169,14 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args()
     payload = audit(Path(args.database), Path(args.output), args.limit)
-    print(json.dumps({k: payload[k] for k in (
+    summary = {k: payload[k] for k in (
         "evaluated_real_transitions", "errors", "source_counts", "actual_opponent_responses",
         "switch_overrides", "switch_execution_matches", "switch_execution_failures",
         "switch_execution_match_rate", "switches_followed_by_observed_pressure",
-        "successful_switch_survival", "move_overrides", "output"
-    ) if k != "output"}, indent=2) | {"output": args.output})
+        "successful_switch_survival", "move_overrides"
+    )}
+    summary["output"] = args.output
+    print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":
