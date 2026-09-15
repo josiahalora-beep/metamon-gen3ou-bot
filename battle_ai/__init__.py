@@ -10,7 +10,7 @@ from .damage import DamageRange, calculate_damage
 from .speed import speed_range, can_outspeed, speed_tie_probability
 from .opponent_model import OpponentModel, PredictedResponse
 from .response_search import ResponseSearcher, ResponseScore
-from .evaluator import TacticalEvaluator
+from .strict_evaluator import TacticalEvaluator
 from .logger import BattleLogger
 
 __all__ = [
