@@ -2,6 +2,7 @@ Jolteon @ Leftovers
 Ability: Volt Absorb
 EVs: 4 HP / 252 SpA / 252 Spe
 Timid Nature
+IVs: 30 Atk / 30 SpA
 - Thunderbolt
 - Hidden Power [Grass]
 - Substitute
@@ -47,6 +48,7 @@ Salamence @ Leftovers
 Ability: Intimidate
 EVs: 4 HP / 252 SpA / 252 Spe
 Naive Nature
+IVs: 30 SpA / 30 SpD / 30 Spe
 - Dragon Claw
 - Fire Blast
 - Brick Break
