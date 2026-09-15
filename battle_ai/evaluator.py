@@ -118,7 +118,10 @@ class TacticalEvaluator:
         text = (reason or "").lower()
         if "hazard plan:" not in text:
             return True
-        if not (0 <= int(model_action) < 4 < len(move_slots)):
+        # Gen 3 has four move actions (0..3). The old chained comparison
+        # `0 <= action < 4 < len(move_slots)` was impossible for a normal
+        # four-slot moveset, which accidentally allowed every hazard override.
+        if not (0 <= int(model_action) < 4 and int(model_action) < len(move_slots)):
             return True
         selected = move_slots[int(model_action)]
         if selected is None or int(getattr(selected, "base_power", 0) or 0) <= 0:
@@ -127,7 +130,11 @@ class TacticalEvaluator:
         active = getattr(battle, "active_pokemon", None)
         if active is None or target is None:
             return False
-        result = calculate_damage(active, target, selected, weather="")
+        weather = ",".join(
+            str(getattr(k, "name", k)).lower()
+            for k in (getattr(battle, "weather", {}) or {}).keys()
+        )
+        result = calculate_damage(active, target, selected, weather=weather)
         if not result.reliable:
             return False
         # Preserve the learned damaging decision unless the attack is truly
