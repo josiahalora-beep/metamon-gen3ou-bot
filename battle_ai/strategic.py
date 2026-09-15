@@ -140,7 +140,7 @@ def safety_override(battle: Any, legal_actions: list[int], model_action: int) ->
                 score, profile = _switch_safety_score(candidate, opponent)
                 alternatives.append((score, int(action), profile))
             if alternatives:
-                current_score, _, current_profile = _switch_safety_score(chosen_target, opponent)
+                current_score, current_profile = _switch_safety_score(chosen_target, opponent)
                 best_score, best_action, best_profile = max(alternatives, key=lambda item: item[0])
                 if best_score > current_score + 1.0:
                     return SafetyDecision(
