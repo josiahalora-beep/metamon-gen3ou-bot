@@ -9,6 +9,7 @@ from metamon.interface import consistent_move_order, consistent_pokemon_order
 
 _STATUS_HAZARD = {"tox", "psn", "brn", "poison", "burn"}
 _RECOVERY_OR_STALL = {"recover", "softboiled", "rest", "protect", "leechseed", "toxic", "spikes", "roar", "whirlwind"}
+_KNOWN_THREAT_SPECIES = {"medicham"}
 
 
 def _move_type(move: Any) -> str:
@@ -39,6 +40,41 @@ def _fallback_pokemon_key(pokemon: Any) -> str:
     return re.sub(r"[^a-z0-9]", "", str(value).lower())
 
 
+def _species_key(pokemon: Any) -> str:
+    value = getattr(pokemon, "species", getattr(pokemon, "name", ""))
+    return re.sub(r"[^a-z0-9]", "", str(value).lower())
+
+
+def _base_stat(pokemon: Any, stat: str) -> int | None:
+    stats = getattr(pokemon, "base_stats", {}) or {}
+    if isinstance(stats, dict):
+        value = stats.get(stat)
+    else:
+        value = getattr(stats, stat, None)
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _known_threat_multiplier(opponent: Any, defender: Any) -> float | None:
+    if _species_key(opponent) not in _KNOWN_THREAT_SPECIES or defender is None:
+        return None
+    return float(type_multiplier("fighting", list(getattr(defender, "types", ()) or ())))
+
+
+def _known_threat_profile(opponent: Any, defender: Any) -> dict:
+    multiplier = _known_threat_multiplier(opponent, defender)
+    if multiplier is None:
+        return {"known_species_threat": False, "threat_multiplier": None, "threat_move_type": None}
+    return {
+        "known_species_threat": True,
+        "threat_multiplier": multiplier,
+        "threat_move_type": "fighting",
+        "base_def": _base_stat(defender, "def"),
+    }
+
+
 def _switch_slots(battle: Any) -> list[Any]:
     """Return switch slots using exactly the same ordering contract as evaluator."""
     team = [
@@ -50,13 +86,10 @@ def _switch_slots(battle: Any) -> list[Any]:
     try:
         return consistent_pokemon_order(team)
     except ValueError:
-        # Unit-test doubles may not be poke-env Pokemon objects. Mirror the
-        # evaluator's fallback ordering rather than returning no target.
         return sorted(team, key=_fallback_pokemon_key)
 
 
 def _team_pokemon_for_action(battle: Any, action: int) -> Any | None:
-    """Resolve action 4-8 to the exact canonical switch target."""
     if action < 4:
         return None
     slots = _switch_slots(battle)
@@ -120,6 +153,18 @@ def _dangerous_pokemon(pokemon: Any, opponent: Any, *, battle: Any = None) -> bo
     status = _status_name(pokemon)
     profile = incoming_type_profile(opponent, pokemon)
     damage = incoming_damage_profile(opponent, pokemon, weather=_weather(battle) if battle else "")
+    known = _known_threat_profile(opponent, pokemon)
+    if known["known_species_threat"]:
+        multiplier = float(known["threat_multiplier"] or 1.0)
+        base_def = known.get("base_def")
+        # Medicham is now OU in ADV and its Pure Power Fighting pressure is
+        # dangerous enough that a 4x-weak target must not simply trade on turn 1.
+        if multiplier >= 2.0:
+            return True
+        # Frail neutral pivots such as Dugtrio should not be left in after a
+        # known Medicham appears when a Fighting-resistant pivot is available.
+        if multiplier >= 1.0 and base_def is not None and base_def <= 75:
+            return True
     if not profile["known_moves"]:
         return hp <= 0.15
     if hp <= 0.15:
@@ -130,16 +175,21 @@ def _dangerous_pokemon(pokemon: Any, opponent: Any, *, battle: Any = None) -> bo
         return True
     if damage["guaranteed_ko"]:
         return True
+    if damage["max_damage_pct"] is not None and damage["max_damage_pct"] >= max(75.0, hp * 90.0):
+        return True
     return False
 
 
 def _switch_safety_score(pokemon: Any, opponent: Any, *, battle: Any = None) -> tuple[float, dict]:
     profile = incoming_type_profile(opponent, pokemon)
     damage = incoming_damage_profile(opponent, pokemon, weather=_weather(battle) if battle else "")
+    known = _known_threat_profile(opponent, pokemon)
     hp = _current_hp_fraction(pokemon)
-    if not profile["known_moves"]:
-        return (hp, {**profile, **damage})
+    if not profile["known_moves"] and not known["known_species_threat"]:
+        return (hp, {**profile, **damage, **known})
     max_mult = float(profile["max_multiplier"] or 1.0)
+    if known["known_species_threat"]:
+        max_mult = max(max_mult, float(known["threat_multiplier"] or 1.0))
     status = _status_name(pokemon)
     score = 2.0 * hp - 2.5 * max_mult
     if status in _STATUS_HAZARD:
@@ -152,7 +202,11 @@ def _switch_safety_score(pokemon: Any, opponent: Any, *, battle: Any = None) -> 
         score -= 5.0
     elif damage["max_damage_pct"] is not None:
         score -= min(4.0, float(damage["max_damage_pct"]) / 100.0 * 3.0)
-    return score, {**profile, **damage}
+    if known["known_species_threat"]:
+        base_def = known.get("base_def")
+        if base_def is not None:
+            score += min(1.5, base_def / 100.0)
+    return score, {**profile, **damage, **known}
 
 
 @dataclass(frozen=True)
@@ -185,7 +239,6 @@ def safety_override(battle: Any, legal_actions: list[int], model_action: int) ->
         return SafetyDecision(None)
 
     # A sub-35% active is at risk of being lost before it can be repositioned.
-    # Keep it alive unless the selected move is a demonstrated guaranteed KO.
     if 0 <= model_action < 4 and _current_hp_fraction(active) <= 0.35:
         selected = _selected_move(active, model_action)
         guaranteed_ko = False
@@ -205,7 +258,7 @@ def safety_override(battle: Any, legal_actions: list[int], model_action: int) ->
                     continue
                 alternatives.append((score, int(action), profile, candidate))
             if alternatives:
-                best_score, best_action, best_profile, best_target = max(alternatives, key=lambda x: (x[0], -x[1]))
+                _, best_action, _, best_target = max(alternatives, key=lambda x: (x[0], -x[1]))
                 return SafetyDecision(
                     best_action,
                     reason=(f"low-HP preservation: refused non-guaranteed attack with compromised active "
