@@ -11,24 +11,15 @@ class SmogonPriorTests(unittest.TestCase):
     def test_revealed_move_reorders_compatible_sets(self):
         payload = {
             "Starmie": {
-                "Standard": {
-                    "moves": ["Surf", "Psychic", "Recover", "Rapid Spin"],
-                    "item": "Leftovers",
-                    "nature": "Timid",
-                    "evs": {"spa": 252, "spe": 252},
-                },
-                "Thunder": {
-                    "moves": ["Thunder", "Surf", "Ice Beam", "Recover"],
-                    "item": "Leftovers",
-                    "nature": "Timid",
-                    "evs": {"spa": 252, "spe": 252},
-                },
+                "Standard": {"moves": ["Surf", "Psychic", "Recover", "Rapid Spin"], "item": "Leftovers", "nature": "Timid", "evs": {"spa": 252, "spe": 252}},
+                "Thunder": {"moves": ["Thunder", "Surf", "Ice Beam", "Recover"], "item": "Leftovers", "nature": "Timid", "evs": {"spa": 252, "spe": 252}},
             }
         }
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "gen3ou.json"
             path.write_text(json.dumps(payload), encoding="utf-8")
             profiles = load_profiles("starmie", revealed_moves=("thunder",), path=path)
+        self.assertGreaterEqual(len(profiles), 2)
         self.assertEqual(profiles[0].name, "Thunder")
         self.assertIn("thunder", profiles[0].evidence)
         self.assertGreater(profiles[0].weight, profiles[1].weight)
@@ -54,8 +45,9 @@ class SmogonPriorTests(unittest.TestCase):
             path.write_text(json.dumps(payload), encoding="utf-8")
             profile = load_profiles("Blissey", path=path)[0]
             stats = expected_stats(pokemon, profile)
-        self.assertGreater(stats["spd"], 500)
-        self.assertGreater(stats["hp"], 600)
+        # Gen 3 Blissey with 252 EVs, 31 IVs, and Calm reaches 714 HP / 405 SpD.
+        self.assertEqual(stats["hp"], 714)
+        self.assertEqual(stats["spd"], 405)
 
 
 if __name__ == "__main__":
