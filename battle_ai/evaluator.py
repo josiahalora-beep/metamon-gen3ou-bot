@@ -10,6 +10,7 @@ from .strategic_plan import strategic_opportunity_override
 from .threat_response import hidden_threat_switch_override
 from .opponent_model import OpponentModel
 from .response_search import ResponseSearcher
+from .override_gate import hard_loss_switch_allowed
 from metamon.interface import consistent_move_order, consistent_pokemon_order
 
 
@@ -24,7 +25,7 @@ class ActionEvaluation:
 
 
 class TacticalEvaluator:
-    """Conservative Gen 3 verifier/reranker with safety-first ordering."""
+    """Conservative Gen 3 verifier/reranker with safety-first authority."""
 
     def __init__(self, *, model_weight=1.0, damage_weight=0.35, ko_weight=2.0,
                  switch_penalty=0.15, anti_throw_penalty=2.0,
@@ -52,6 +53,14 @@ class TacticalEvaluator:
             return max(0, int(getattr(active, "_protect_counter", 0) or 0))
         except (TypeError, ValueError):
             return 0
+
+    @staticmethod
+    def _move_slots(active: Any) -> list[Any]:
+        raw = list((getattr(active, "moves", {}) or {}).values()) if active is not None else []
+        try:
+            return list(consistent_move_order(raw))
+        except ValueError:
+            return sorted(raw, key=lambda m: str(getattr(m, "id", getattr(m, "name", ""))))
 
     def _protect_sequence_breaker(self, active: Any, target: Any, move_slots: list[Any],
                                   evaluations: list[ActionEvaluation], model_action: int,
@@ -97,17 +106,18 @@ class TacticalEvaluator:
                 )
                 return
 
+    def _allow_override(self, battle: Any, model_action: int, candidate_action: int) -> bool:
+        if candidate_action < 4:
+            return True
+        return hard_loss_switch_allowed(battle, int(model_action), int(candidate_action))
+
     def evaluate(self, battle: Any, legal_actions: list[int], model_action: int) -> tuple[int, list[ActionEvaluation]]:
         state = snapshot_battle(battle, legal_actions)
         active = getattr(battle, "active_pokemon", None)
         target = getattr(battle, "opponent_active_pokemon", None)
-        raw_move_slots = list(getattr(active, "moves", {}).values())
-        try:
-            move_slots = consistent_move_order(raw_move_slots)
-        except ValueError:
-            move_slots = sorted(raw_move_slots, key=lambda m: str(getattr(m, "id", "")))
+        move_slots = self._move_slots(active)
         available_move_ids = {getattr(m, "id", "") for m in (getattr(battle, "available_moves", []) or [])}
-        raw_switch_slots = [p for p in getattr(battle, "team", {}).values()
+        raw_switch_slots = [p for p in (getattr(battle, "team", {}) or {}).values()
                             if not getattr(p, "fainted", False) and not getattr(p, "active", False)]
         try:
             switch_slots = consistent_pokemon_order(raw_switch_slots)
@@ -143,7 +153,6 @@ class TacticalEvaluator:
         chosen = int(model_action) if int(model_action) in legal_set else (min(legal_set) if legal_set else 0)
         safety_action: int | None = None
 
-        # Mechanical Protect streak logic comes first.
         sequence_action, sequence_reason = self._protect_sequence_breaker(
             active, target, move_slots, evaluations, chosen,
             weather=(state.weather[0] if state.weather else ""),
@@ -153,40 +162,32 @@ class TacticalEvaluator:
             safety_action = sequence_action
             self._apply_override(evaluations, chosen, sequence_reason)
 
-        # Hard safety MUST run before prediction. This prevents the predictive
-        # layer from turning a 27%-HP/poisoned switch into a sacrificial attack.
         if safety_action is None:
             decision = safety_override(battle, list(legal_set), chosen)
-            if decision.action is not None and decision.action in legal_set and decision.action != chosen:
+            if decision.action is not None and decision.action in legal_set and decision.action != chosen and self._allow_override(battle, chosen, decision.action):
                 chosen = decision.action
                 safety_action = decision.action
-                self._apply_override(evaluations, chosen, decision.reason)
+                self._apply_override(evaluations, chosen, decision.reason + (" | hard-loss gate" if decision.action >= 4 else ""))
 
-        # Revealed threat response is also deterministic enough to outrank
-        # speculative opponent-response prediction.
         if safety_action is None:
             threat_action, threat_reason = hidden_threat_switch_override(
                 battle, list(legal_set), chosen,
                 {idx: move for idx, move in enumerate(move_slots[:4]) if move is not None},
             )
-            if threat_action is not None and threat_action in legal_set and threat_action != chosen:
+            if threat_action is not None and threat_action in legal_set and threat_action != chosen and self._allow_override(battle, chosen, threat_action):
                 chosen = threat_action
                 safety_action = threat_action
-                self._apply_override(evaluations, chosen, threat_reason)
+                self._apply_override(evaluations, chosen, threat_reason + (" | hard-loss gate" if threat_action >= 4 else ""))
 
-        # Our strategic plan controls setup, hazard stacking, win-condition
-        # activation, and preservation of designated sweepers.
         if safety_action is None:
             strategic_action, strategic_reason = strategic_opportunity_override(
                 battle, list(legal_set), chosen
             )
-            if strategic_action is not None and strategic_action in legal_set and strategic_action != chosen:
+            if strategic_action is not None and strategic_action in legal_set and strategic_action != chosen and self._allow_override(battle, chosen, strategic_action):
                 chosen = strategic_action
                 safety_action = strategic_action
-                self._apply_override(evaluations, chosen, strategic_reason)
+                self._apply_override(evaluations, chosen, strategic_reason + (" | hard-loss gate" if strategic_action >= 4 else ""))
 
-        # Bayesian response search is last. It now only has authority where its
-        # own conservative gates permit an actual tactical improvement.
         if safety_action is None:
             response_action, response_reason, response_scores = self.response_search.choose(
                 battle, list(legal_set), chosen
@@ -205,13 +206,12 @@ class TacticalEvaluator:
                         )
                         break
 
-        # Final legacy safety pass as a fallback only.
-        if self.override_mode in {"verifier", "rerank"} and chosen in legal_set and safety_action is None:
+        if self.override_mode in {"verifier", "rerank"} and safety_action is None:
             decision = safety_override(battle, list(legal_set), chosen)
-            if decision.action is not None and decision.action in legal_set and decision.action != chosen:
+            if decision.action is not None and decision.action in legal_set and decision.action != chosen and self._allow_override(battle, chosen, decision.action):
                 chosen = decision.action
                 safety_action = decision.action
-                self._apply_override(evaluations, chosen, decision.reason)
+                self._apply_override(evaluations, chosen, decision.reason + (" | hard-loss gate" if decision.action >= 4 else ""))
 
         if self.override_mode == "rerank" and safety_action is None:
             best = max(evaluations, key=lambda x: x.tactical_score) if evaluations else None
