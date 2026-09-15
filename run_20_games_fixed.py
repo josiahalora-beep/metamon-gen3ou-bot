@@ -22,7 +22,7 @@ import play_public_synthetic as app
 
 
 class CleanPublicQueueOnLadder(app.PublicQueueOnLadder):
-    """Keep existing ladder behavior while making every decision traceable."""
+    """Keep ladder behavior while making decisions and request races robust."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -31,14 +31,32 @@ class CleanPublicQueueOnLadder(app.PublicQueueOnLadder):
         self._decision_started = {}
 
     def _labels_for_state(self, state):
-        moves = sorted(list(state.get("available_moves", []) or []), key=str.lower)
-        switches = sorted(list(state.get("available_switches", []) or []), key=str.lower)
+        moves = list(state.get("available_moves", []) or [])
+        switches = list(state.get("available_switches", []) or [])
         labels = {}
         for i, move in enumerate(moves[:4]):
             labels[i] = f"move {move}"
         for i, mon in enumerate(switches[:5], start=4):
             labels[i] = f"switch {mon}"
         return labels, moves[:4], switches[:5]
+
+    def action_to_move(self, action, battle):
+        """Accept a valid request when poke-env transiently marks the battle finished."""
+        was_finished = bool(getattr(battle, "_finished", False)) if battle is not None else False
+        transient_request = bool(
+            was_finished
+            and battle is not None
+            and battle is self.current_battle
+            and self._battle_tag(battle) == self._battle_tag(self.current_battle)
+            and ((getattr(battle, "available_moves", None) or []) or (getattr(battle, "available_switches", None) or []))
+        )
+        if transient_request:
+            battle._finished = False
+        try:
+            return super().action_to_move(action, battle)
+        finally:
+            if transient_request:
+                battle._finished = was_finished
 
     def _trace(self, stage, battle_tag="", **fields):
         tag = str(battle_tag or "")
@@ -56,10 +74,7 @@ class CleanPublicQueueOnLadder(app.PublicQueueOnLadder):
             started = self._decision_started.get(tag)
             latency_ms = None
             if started is not None:
-                latency_ms = round(
-                    (datetime.now(timezone.utc) - started).total_seconds() * 1000.0,
-                    2,
-                )
+                latency_ms = round((datetime.now(timezone.utc) - started).total_seconds() * 1000.0, 2)
                 fields["decision_latency_ms"] = latency_ms
             self._last_model[tag] = {
                 "turn": int(state.get("turn", 0) or 0),
@@ -103,8 +118,6 @@ class CleanPublicQueueOnLadder(app.PublicQueueOnLadder):
             )
             self._decision_started.pop(tag, None)
 
-        # lifecycle.battle_active currently fires once per second in the ladder loop.
-        # Keep the first record and only write later records when the compact state changes.
         if stage == "lifecycle.battle_active" and tag:
             state = fields.get("state")
             if self._last_active_state.get(tag) == state:
