@@ -7,6 +7,7 @@ from .damage import calculate_damage
 from .state import snapshot_battle
 from .strategic import safety_override
 from .strategic_plan import strategic_opportunity_override
+from .threat_response import hidden_threat_switch_override
 from metamon.interface import consistent_move_order, consistent_pokemon_order
 
 
@@ -150,6 +151,28 @@ class TacticalEvaluator:
                         evaluation.reason + " | " + sequence_reason,
                     )
                     break
+
+        # Hidden-stat battles can reach positions where the opponent's moves are
+        # not revealed yet. Give the model one last chance to attack/act, but do
+        # not permit a passive turn when broad speed/offense evidence points to a
+        # stronger opposing attacker and a clearly better defensive teammate.
+        if safety_action is None:
+            threat_action, threat_reason = hidden_threat_switch_override(
+                battle, list(legal_set), chosen,
+                {idx: move for idx, move in enumerate(move_slots[:4]) if move is not None},
+            )
+            if threat_action is not None and threat_action in legal_set and threat_action != chosen:
+                chosen = threat_action
+                safety_action = threat_action
+                for i, evaluation in enumerate(evaluations):
+                    if evaluation.action == chosen:
+                        evaluations[i] = ActionEvaluation(
+                            evaluation.action, evaluation.kind, evaluation.label,
+                            evaluation.tactical_score + self.anti_throw_penalty,
+                            evaluation.ko_probability,
+                            evaluation.reason + " | " + threat_reason,
+                        )
+                        break
 
         if safety_action is None:
             strategic_action, strategic_reason = strategic_opportunity_override(
