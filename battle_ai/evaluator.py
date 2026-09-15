@@ -111,6 +111,29 @@ class TacticalEvaluator:
             return True
         return hard_loss_switch_allowed(battle, int(model_action), int(candidate_action))
 
+    @staticmethod
+    def _strategic_override_allowed(battle: Any, model_action: int, candidate_action: int, reason: str,
+                                     move_slots: list[Any]) -> bool:
+        """Do not let strategic hazards replace a meaningful learned attack."""
+        text = (reason or "").lower()
+        if "hazard plan:" not in text:
+            return True
+        if not (0 <= int(model_action) < 4 < len(move_slots)):
+            return True
+        selected = move_slots[int(model_action)]
+        if selected is None or int(getattr(selected, "base_power", 0) or 0) <= 0:
+            return True
+        target = getattr(battle, "opponent_active_pokemon", None)
+        active = getattr(battle, "active_pokemon", None)
+        if active is None or target is None:
+            return False
+        result = calculate_damage(active, target, selected, weather="")
+        if not result.reliable:
+            return False
+        # Preserve the learned damaging decision unless the attack is truly
+        # non-threatening; hazards are strategic refinement, not a hard command.
+        return result.percentage_max < 15.0 and result.ko_probability <= 0.0
+
     def evaluate(self, battle: Any, legal_actions: list[int], model_action: int) -> tuple[int, list[ActionEvaluation]]:
         state = snapshot_battle(battle, legal_actions)
         active = getattr(battle, "active_pokemon", None)
@@ -183,7 +206,12 @@ class TacticalEvaluator:
             strategic_action, strategic_reason = strategic_opportunity_override(
                 battle, list(legal_set), chosen
             )
-            if strategic_action is not None and strategic_action in legal_set and strategic_action != chosen and self._allow_override(battle, chosen, strategic_action):
+            strategic_allowed = self._strategic_override_allowed(
+                battle, chosen, strategic_action if strategic_action is not None else -1,
+                strategic_reason, move_slots,
+            )
+            if (strategic_action is not None and strategic_action in legal_set and strategic_action != chosen
+                    and strategic_allowed and self._allow_override(battle, chosen, strategic_action)):
                 chosen = strategic_action
                 safety_action = strategic_action
                 self._apply_override(evaluations, chosen, strategic_reason + (" | hard-loss gate" if strategic_action >= 4 else ""))
