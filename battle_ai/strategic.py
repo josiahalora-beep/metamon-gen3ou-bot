@@ -208,9 +208,9 @@ def safety_override(battle: Any, legal_actions: list[int], model_action: int) ->
                 best_score, best_action, best_profile, best_target = max(alternatives, key=lambda x: (x[0], -x[1]))
                 return SafetyDecision(
                     best_action,
-                    reason=(f"low-HP preservation: refused non-guaranteed attack with active "
+                    reason=(f"low-HP preservation: refused non-guaranteed attack with compromised active "
                             f"{getattr(active, 'species', 'pokemon')} at {_current_hp_fraction(active):.0%}; "
-                            f"switch to {getattr(best_target, 'species', 'pokemon')} "
+                            f"safer switch to {getattr(best_target, 'species', 'pokemon')} "
                             f"(HP={_current_hp_fraction(best_target):.0%})"),
                     hard=True,
                 )
