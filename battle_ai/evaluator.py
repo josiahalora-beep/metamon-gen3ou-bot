@@ -4,8 +4,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from .damage import calculate_damage
-from .state import snapshot_battle
+from .snapshot import snapshot_battle
 from .strategic import safety_override
+from .strategic_plan import strategic_opportunity_override
 from metamon.interface import consistent_move_order, consistent_pokemon_order
 
 
@@ -20,7 +21,7 @@ class ActionEvaluation:
 
 
 class TacticalEvaluator:
-    """Conservative Gen 3 verifier/reranker with hard anti-throw checks."""
+    """Conservative Gen 3 verifier/reranker with strategic anti-throw checks."""
 
     def __init__(self, *, model_weight=1.0, damage_weight=0.35, ko_weight=2.0,
                  switch_penalty=0.15, anti_throw_penalty=2.0,
@@ -90,8 +91,7 @@ class TacticalEvaluator:
 
         _, _, _, action, move = max(candidates)
         move_name = getattr(move, "name", getattr(move, "id", "attack"))
-        success_denominator = 2 ** counter
-        success_probability = 1.0 / success_denominator
+        success_probability = 1.0 / (2 ** counter)
         return action, (
             f"protect sequence breaker: {getattr(selected, 'name', getattr(selected, 'id', 'protect'))} "
             f"has already succeeded {counter} consecutive time(s); next success is only "
@@ -164,6 +164,23 @@ class TacticalEvaluator:
                     )
                     break
 
+        if safety_action is None:
+            strategic_action, strategic_reason = strategic_opportunity_override(
+                battle, list(legal_set), chosen
+            )
+            if strategic_action is not None and strategic_action in legal_set and strategic_action != chosen:
+                chosen = strategic_action
+                safety_action = strategic_action
+                for i, evaluation in enumerate(evaluations):
+                    if evaluation.action == chosen:
+                        evaluations[i] = ActionEvaluation(
+                            evaluation.action, evaluation.kind, evaluation.label,
+                            evaluation.tactical_score + self.anti_throw_penalty,
+                            evaluation.ko_probability,
+                            evaluation.reason + " | " + strategic_reason,
+                        )
+                        break
+
         if self.override_mode in {"verifier", "rerank"} and chosen in legal_set and safety_action is None:
             decision = safety_override(battle, list(legal_set), chosen)
             if decision.action is not None and decision.action in legal_set and decision.action != chosen:
@@ -180,8 +197,7 @@ class TacticalEvaluator:
                         break
 
         # Reranking may optimize among ordinary actions, but it must never
-        # undo a hard anti-throw correction. This makes the safety contract
-        # invariant across verifier and rerank configurations.
+        # undo a hard anti-throw or strategic correction.
         if self.override_mode == "rerank" and safety_action is None:
             best = max(evaluations, key=lambda x: x.tactical_score) if evaluations else None
             if best is not None and best.kind == "move" and best.tactical_score > -1e8:
