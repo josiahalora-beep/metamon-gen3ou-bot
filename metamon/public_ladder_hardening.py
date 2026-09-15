@@ -22,11 +22,11 @@ def install_public_ladder_hardening() -> None:
     original_handle_message = PSClient._handle_message
 
     async def public_search_ladder_game(self, format_: str, packed_team: str | None):
-        # Showdown's current privacy controls are /hidenext and
-        # /inviteonlynext. Older /ionext is intentionally obsolete.
+        # Preserve Showdown's normal account queue/privacy configuration.
+        # The user can use hidden or invite-only battles and view them from
+        # the logged-in account. Do not forcibly change /hidenext or
+        # /inviteonlynext here.
         await self.set_team(packed_team)
-        await self.send_message("/hidenext off")
-        await self.send_message("/inviteonlynext off")
         await self.send_message(f"/search {format_}")
 
     async def resilient_handle_message(self, message: str):
