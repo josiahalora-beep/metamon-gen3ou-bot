@@ -5,7 +5,6 @@ from typing import Any
 
 from .damage import calculate_damage
 from .state import snapshot_battle
-from .insights import position_metadata
 from .strategic import safety_override
 from metamon.interface import consistent_move_order, consistent_pokemon_order
 
@@ -21,7 +20,7 @@ class ActionEvaluation:
 
 
 class TacticalEvaluator:
-    """Conservative Gen 3 reranker with hard anti-throw safety checks."""
+    """Conservative Gen 3 verifier/reranker with hard anti-throw checks."""
 
     def __init__(self, *, model_weight=1.0, damage_weight=0.35, ko_weight=2.0,
                  switch_penalty=0.15, anti_throw_penalty=2.0,
@@ -37,15 +36,14 @@ class TacticalEvaluator:
         state = snapshot_battle(battle, legal_actions)
         active = getattr(battle, "active_pokemon", None)
         target = getattr(battle, "opponent_active_pokemon", None)
-        # Metamon's installed action contract is fixed-slot: 0..3 are the
-        # alphabetically sorted active-move slots and 4..8 are sorted switches.
         raw_move_slots = list(getattr(active, "moves", {}).values())
         try:
             move_slots = consistent_move_order(raw_move_slots)
         except ValueError:
             move_slots = sorted(raw_move_slots, key=lambda m: str(getattr(m, "id", "")))
         available_move_ids = {getattr(m, "id", "") for m in (getattr(battle, "available_moves", []) or [])}
-        raw_switch_slots = [p for p in getattr(battle, "team", {}).values() if not getattr(p, "fainted", False) and not getattr(p, "active", False)]
+        raw_switch_slots = [p for p in getattr(battle, "team", {}).values()
+                            if not getattr(p, "fainted", False) and not getattr(p, "active", False)]
         try:
             switch_slots = consistent_pokemon_order(raw_switch_slots)
         except ValueError:
@@ -60,13 +58,14 @@ class TacticalEvaluator:
                     evaluations.append(ActionEvaluation(idx, "illegal", f"move-slot:{idx}", -1e9, 0.0, "slot unavailable in current request"))
                     continue
                 result = calculate_damage(active, target, move, weather=(state.weather[0] if state.weather else ""))
-                evidence = result.reliable
                 score = self.model_weight * float(idx == model_action)
-                if evidence:
+                if result.reliable:
                     score += self.damage_weight * result.percentage_max + self.ko_weight * result.ko_probability
                 label = str(getattr(move, "id", getattr(move, "name", "move")))
                 reason = (f"damage {result.percentage_min:.1f}-{result.percentage_max:.1f}%; KO {result.ko_probability:.0%}"
-                          if evidence else f"damage unavailable: {result.reason}")
+                          if result.reliable else f"damage unavailable: {result.reason}")
+                if result.reason:
+                    reason += f" [{result.reason}]"
                 evaluations.append(ActionEvaluation(idx, "move", label, score, result.ko_probability, reason))
             else:
                 switch_idx = idx - 4
@@ -76,27 +75,26 @@ class TacticalEvaluator:
 
         legal_set = {e.action for e in evaluations if e.kind != "illegal"}
         chosen = int(model_action) if int(model_action) in legal_set else (min(legal_set) if legal_set else 0)
-
-        # Safety overrides are intentionally narrower than tactical reranking.
-        # They are applied only for high-confidence anti-throw cases that use
-        # revealed battle information and do not require invented opponent sets.
+        safety_action = None
         if self.override_mode in {"verifier", "rerank"} and chosen in legal_set:
             decision = safety_override(battle, list(legal_set), chosen)
             if decision.action is not None and decision.action in legal_set and decision.action != chosen:
                 chosen = decision.action
+                safety_action = decision.action
                 for i, evaluation in enumerate(evaluations):
                     if evaluation.action == chosen:
                         evaluations[i] = ActionEvaluation(
-                            evaluation.action,
-                            evaluation.kind,
-                            evaluation.label,
+                            evaluation.action, evaluation.kind, evaluation.label,
                             evaluation.tactical_score + self.anti_throw_penalty,
                             evaluation.ko_probability,
                             evaluation.reason + " | " + decision.reason,
                         )
                         break
 
-        if self.override_mode == "rerank":
+        # Reranking may optimize among ordinary actions, but it must never
+        # undo a hard anti-throw correction. This makes the safety contract
+        # invariant across verifier and rerank configurations.
+        if self.override_mode == "rerank" and safety_action is None:
             best = max(evaluations, key=lambda x: x.tactical_score) if evaluations else None
             if best is not None and best.kind == "move" and best.tactical_score > -1e8:
                 chosen = best.action
