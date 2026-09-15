@@ -1,0 +1,10 @@
+{
+  "enabled": true,
+  "model_weight": 1.0,
+  "damage_weight": 0.35,
+  "ko_weight": 2.0,
+  "switch_penalty": 0.15,
+  "anti_throw_penalty": 2.0,
+  "override_mode": "verifier",
+  "log_reasoning": true
+}
