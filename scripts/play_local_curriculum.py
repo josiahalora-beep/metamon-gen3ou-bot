@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import functools
 import json
+import re
 import subprocess
 import sys
 import time
@@ -34,6 +35,19 @@ metamon_wrappers.datetime = _SafeDateTime
 import play_local_selfplay_synthetic_v2 as impl
 import play_public_synthetic as runner
 from metamon.rl.pretrained import LocalFinetunedModel
+
+
+def showdown_username(name: str, worker: int, side: str) -> str:
+    """Return a Showdown-safe guest username containing only ASCII alphanumerics.
+
+    The local Showdown server normalizes guest names by removing punctuation.
+    ChallengeByUsername addresses users by their normalized userid, so names
+    containing '-' can silently become a different username and leave reset()
+    waiting forever for the challenge handshake.
+    """
+    base = re.sub(r"[^A-Za-z0-9]", "", str(name)) or "Curriculum"
+    # Keep each worker/side pair globally distinct while avoiding punctuation.
+    return f"{base}{side}{worker}"
 
 
 def build_model(args):
@@ -194,8 +208,9 @@ async def main():
             worker_log = base_log / f"worker_{worker + 1:02d}"
             worker_root.mkdir(parents=True, exist_ok=True)
             worker_log.mkdir(parents=True, exist_ok=True)
-            a_user = f"{args.username}-W{worker + 1}"
-            b_user = f"{args.opponent_username}-W{worker + 1}"
+            a_user = showdown_username(args.username, worker + 1, "A")
+            b_user = showdown_username(args.opponent_username, worker + 1, "B")
+            print(f"[worker {worker + 1}] Showdown usernames: {a_user} vs {b_user}", flush=True)
             acceptor = subprocess.Popen(
                 child_command(args, "acceptor", b_user, a_user, worker_log / "acceptor", worker_root, worker_battles),
                 cwd=REPO_ROOT,
