@@ -6,6 +6,7 @@ from typing import Any
 from .damage import calculate_damage
 from .state import snapshot_battle
 from .insights import position_metadata
+from .strategic import safety_override
 from metamon.interface import consistent_move_order, consistent_pokemon_order
 
 
@@ -20,7 +21,7 @@ class ActionEvaluation:
 
 
 class TacticalEvaluator:
-    """Conservative Gen 3 reranker: model preference remains the primary signal."""
+    """Conservative Gen 3 reranker with hard anti-throw safety checks."""
 
     def __init__(self, *, model_weight=1.0, damage_weight=0.35, ko_weight=2.0,
                  switch_penalty=0.15, anti_throw_penalty=2.0,
@@ -72,8 +73,29 @@ class TacticalEvaluator:
                 target_name = switch_slots[switch_idx].name if 0 <= switch_idx < len(switch_slots) else "unavailable"
                 score = self.model_weight * float(idx == model_action) - self.switch_penalty
                 evaluations.append(ActionEvaluation(idx, "switch", f"switch:{target_name}", score, 0.0, "switch position not numerically evaluated"))
+
         legal_set = {e.action for e in evaluations if e.kind != "illegal"}
         chosen = int(model_action) if int(model_action) in legal_set else (min(legal_set) if legal_set else 0)
+
+        # Safety overrides are intentionally narrower than tactical reranking.
+        # They are applied only for high-confidence anti-throw cases that use
+        # revealed battle information and do not require invented opponent sets.
+        if self.override_mode in {"verifier", "rerank"} and chosen in legal_set:
+            decision = safety_override(battle, list(legal_set), chosen)
+            if decision.action is not None and decision.action in legal_set and decision.action != chosen:
+                chosen = decision.action
+                for i, evaluation in enumerate(evaluations):
+                    if evaluation.action == chosen:
+                        evaluations[i] = ActionEvaluation(
+                            evaluation.action,
+                            evaluation.kind,
+                            evaluation.label,
+                            evaluation.tactical_score + self.anti_throw_penalty,
+                            evaluation.ko_probability,
+                            evaluation.reason + " | " + decision.reason,
+                        )
+                        break
+
         if self.override_mode == "rerank":
             best = max(evaluations, key=lambda x: x.tactical_score) if evaluations else None
             if best is not None and best.kind == "move" and best.tactical_score > -1e8:
