@@ -16,17 +16,98 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$SelfPlayRoot = (Resolve-Path $SelfPlayRoot -ErrorAction Stop).Path
-$acceptorRoot = Join-Path $SelfPlayRoot "acceptor"
-$challengerRoot = Join-Path $SelfPlayRoot "challenger"
-if (-not (Test-Path (Join-Path $acceptorRoot "gen3ou"))) {
-    throw "Missing acceptor AMAGO trajectories at $acceptorRoot\gen3ou."
-}
-if (-not (Test-Path (Join-Path $challengerRoot "gen3ou"))) {
-    throw "Missing challenger AMAGO trajectories at $challengerRoot\gen3ou."
+# Resolve paths from the repository root rather than the caller's current
+# directory. This keeps the training pipeline reproducible when invoked from
+# another working directory or by an orchestration script.
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+
+function Resolve-RepoPath {
+    param([Parameter(Mandatory = $true)][string]$PathValue)
+
+    if ([System.IO.Path]::IsPathRooted($PathValue)) {
+        return [System.IO.Path]::GetFullPath($PathValue)
+    }
+    return [System.IO.Path]::GetFullPath((Join-Path $RepoRoot $PathValue))
 }
 
-$yamlDir = Join-Path $PWD "battle_data\selfplay_training"
+$SelfPlayRoot = Resolve-RepoPath $SelfPlayRoot
+$SaveDir = Resolve-RepoPath $SaveDir
+
+if (-not (Test-Path -LiteralPath $SelfPlayRoot -PathType Container)) {
+    throw "Self-play trajectory root does not exist: $SelfPlayRoot"
+}
+
+# Self-play is partitioned by worker. AMAGO's custom_replays entry expects a
+# single replay pile per role, so combine every worker's gen3ou trajectories
+# into a deterministic staging directory without modifying the originals.
+$workerDirs = @(
+    Get-ChildItem -LiteralPath $SelfPlayRoot -Directory -ErrorAction Stop |
+        Where-Object { $_.Name -match '^worker_[0-9]+$' } |
+        Sort-Object Name
+)
+
+if ($workerDirs.Count -eq 0) {
+    throw "No worker_* directories found under $SelfPlayRoot. Expected worker_NN\acceptor\gen3ou and worker_NN\challenger\gen3ou."
+}
+
+$stagingRoot = Join-Path $SelfPlayRoot "_training_replays"
+$acceptorRoot = Join-Path $stagingRoot "acceptor"
+$challengerRoot = Join-Path $stagingRoot "challenger"
+$acceptorGen3 = Join-Path $acceptorRoot "gen3ou"
+$challengerGen3 = Join-Path $challengerRoot "gen3ou"
+
+# Rebuild the staging pile on every invocation so stale trajectories cannot
+# leak into a later training run. The source worker directories are untouched.
+if (Test-Path -LiteralPath $stagingRoot) {
+    Remove-Item -LiteralPath $stagingRoot -Recurse -Force
+}
+New-Item -ItemType Directory -Force $acceptorGen3 | Out-Null
+New-Item -ItemType Directory -Force $challengerGen3 | Out-Null
+
+$acceptorCount = 0
+$challengerCount = 0
+
+foreach ($worker in $workerDirs) {
+    $workerAcceptor = Join-Path $worker.FullName "acceptor\gen3ou"
+    $workerChallenger = Join-Path $worker.FullName "challenger\gen3ou"
+
+    if (-not (Test-Path -LiteralPath $workerAcceptor -PathType Container)) {
+        throw "Missing acceptor AMAGO trajectories for $($worker.Name): $workerAcceptor"
+    }
+    if (-not (Test-Path -LiteralPath $workerChallenger -PathType Container)) {
+        throw "Missing challenger AMAGO trajectories for $($worker.Name): $workerChallenger"
+    }
+
+    $acceptorFiles = @(Get-ChildItem -LiteralPath $workerAcceptor -File -Recurse | Sort-Object FullName)
+    $challengerFiles = @(Get-ChildItem -LiteralPath $workerChallenger -File -Recurse | Sort-Object FullName)
+
+    foreach ($file in $acceptorFiles) {
+        $destination = Join-Path $acceptorGen3 $file.Name
+        if (Test-Path -LiteralPath $destination) {
+            throw "Duplicate acceptor trajectory filename while aggregating workers: $($file.Name)"
+        }
+        Copy-Item -LiteralPath $file.FullName -Destination $destination
+        $acceptorCount++
+    }
+
+    foreach ($file in $challengerFiles) {
+        $destination = Join-Path $challengerGen3 $file.Name
+        if (Test-Path -LiteralPath $destination) {
+            throw "Duplicate challenger trajectory filename while aggregating workers: $($file.Name)"
+        }
+        Copy-Item -LiteralPath $file.FullName -Destination $destination
+        $challengerCount++
+    }
+}
+
+if ($acceptorCount -eq 0) {
+    throw "No acceptor AMAGO trajectory files found under worker_*\acceptor\gen3ou in $SelfPlayRoot"
+}
+if ($challengerCount -eq 0) {
+    throw "No challenger AMAGO trajectory files found under worker_*\challenger\gen3ou in $SelfPlayRoot"
+}
+
+$yamlDir = Join-Path $RepoRoot "battle_data\selfplay_training"
 New-Item -ItemType Directory -Force $yamlDir | Out-Null
 $yamlPath = Join-Path $yamlDir ("$RunName.yaml")
 
@@ -37,16 +118,18 @@ if ($PrevRunDir -ne '') {
     if ($PrevRunName -eq '' -or $PrevCheckpoint -le 0) {
         throw 'PrevRunDir requires PrevRunName and PrevCheckpoint.'
     }
-    $prevDataset = (Resolve-Path (Join-Path $PrevRunDir "$PrevRunName\dataset_config.yaml") -ErrorAction Stop).Path.Replace('\','/')
+
+    $PrevRunDir = Resolve-RepoPath $PrevRunDir
+    $prevDatasetPath = Join-Path $PrevRunDir "$PrevRunName\dataset_config.yaml"
+    $prevDataset = (Resolve-Path $prevDatasetPath -ErrorAction Stop).Path.Replace('\','/')
     $prevBlock = "prev_dataset: `"$prevDataset`"`nprev_weight: 0.75"
-    $weightBlock = ""
 } else {
     $prevBlock = "prev_dataset: self_play_dset.yaml`nprev_weight: 0.75"
-    $weightBlock = ""
 }
 
 @"
 # Automatically generated iterative Gen 3 OU curriculum dataset.
+# Worker-partitioned self-play is aggregated into the staging replay piles.
 # Keep the pretrained/previous distribution while emphasizing fresh self-play.
 replay_weight: 0.05
 $prevBlock
@@ -61,6 +144,10 @@ anneal_epochs: $Epochs
 "@ | Set-Content -Encoding UTF8 $yamlPath
 
 Write-Host "Self-play trajectory root: $SelfPlayRoot"
+Write-Host "Workers discovered: $($workerDirs.Count)"
+Write-Host "Aggregated acceptor trajectories: $acceptorCount"
+Write-Host "Aggregated challenger trajectories: $challengerCount"
+Write-Host "Training replay staging root: $stagingRoot"
 Write-Host "Dataset config: $yamlPath"
 
 $cmd = @(
@@ -85,9 +172,14 @@ if ($PrevRunDir -ne '') {
 }
 
 Write-Host "Starting SyntheticRLV2 finetuning: $RunName"
-python @cmd
-if ($LASTEXITCODE -ne 0) {
-    throw "SyntheticRLV2 self-play finetuning failed with exit code $LASTEXITCODE."
+Push-Location $RepoRoot
+try {
+    python @cmd
+    if ($LASTEXITCODE -ne 0) {
+        throw "SyntheticRLV2 self-play finetuning failed with exit code $LASTEXITCODE."
+    }
+} finally {
+    Pop-Location
 }
 
 Write-Host "Finetuning completed." -ForegroundColor Green
