@@ -1,15 +1,12 @@
 # Gen 3 OU expert bootstrap dataset.
 # Human replays are prefiltered to high-rated battles (>=1400) by the prep script.
-# Public Metamon self-play supplies diverse opponents; local self-play supplies
-# the current bot's own experience.
+# Public Metamon self-play supplies diverse opponents.
 replay_weight: 0.05
 self_play:
   pac-base: 0.40
   pac-exploratory: 0.10
 custom_replays:
   - dir: battle_data/expert_human/gen3ou
-    weight: 0.30
-  - dir: battle_data/curriculum/iter_0001/trajectories/_training_replays
-    weight: 0.15
+    weight: 0.45
 formats:
   - gen3ou
