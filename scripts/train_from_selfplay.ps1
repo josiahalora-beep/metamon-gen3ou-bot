@@ -127,7 +127,7 @@ if ($PrevRunDir -ne '') {
     $prevBlock = "prev_dataset: self_play_dset.yaml`nprev_weight: 0.75"
 }
 
-@"
+$yamlContent = @"
 # Automatically generated iterative Gen 3 OU curriculum dataset.
 # Worker-partitioned self-play is aggregated into the staging replay piles.
 # Keep the pretrained/previous distribution while emphasizing fresh self-play.
@@ -141,7 +141,13 @@ custom_replays:
 formats:
   - gen3ou
 anneal_epochs: $Epochs
-"@ | Set-Content -Encoding UTF8 $yamlPath
+"@
+
+# Windows PowerShell's `Set-Content -Encoding UTF8` writes a UTF-8 BOM.
+# PyYAML's SafeLoader used by metamon.rl.finetune expects plain UTF-8 here,
+# so write the generated YAML explicitly as UTF-8 without a BOM.
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($yamlPath, $yamlContent, $utf8NoBom)
 
 Write-Host "Self-play trajectory root: $SelfPlayRoot"
 Write-Host "Workers discovered: $($workerDirs.Count)"
@@ -182,6 +188,6 @@ try {
     Pop-Location
 }
 
-Write-Host "Finetuning completed." -ForegroundColor Green
+Write-Host "Finetuning completed."
 Write-Host "New checkpoints: $SaveDir\$RunName\ckpts\policy_weights\"
 Write-Host "Dataset config:  $SaveDir\$RunName\dataset_config.yaml"
