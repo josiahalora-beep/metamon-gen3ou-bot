@@ -1,0 +1,93 @@
+﻿
+  metamon\rl\pretrained.py:201:
+  metamon\rl\pretrained.py:202:    def get_path_to_checkpoint(self, checkpoint: int) -> str:
+  metamon\rl\pretrained.py:203:        # Download checkpoint from HF Hub
+  metamon\rl\pretrained.py:204:        checkpoint_path = huggingface_hub.hf_hub_download(
+  metamon\rl\pretrained.py:205:            repo_id=self.HF_REPO_ID,
+  metamon\rl\pretrained.py:206:            filename=f"{self.model_name}/ckpts/policy_weights/policy_epoch_{checkpoint}.pt",
+  metamon\rl\pretrained.py:207:            cache_dir=self.hf_cache_dir,
+  metamon\rl\pretrained.py:208:        )
+  metamon\rl\pretrained.py:209:        return checkpoint_path
+  metamon\rl\pretrained.py:210:
+> metamon\rl\pretrained.py:211:    def initialize_agent(
+  metamon\rl\pretrained.py:212:        self,
+  metamon\rl\pretrained.py:213:        checkpoint: Optional[int] = None,
+  metamon\rl\pretrained.py:214:        log: bool = False,
+  metamon\rl\pretrained.py:215:        action_temperature: float = 1.0,
+  metamon\rl\pretrained.py:216:    ) -> amago.Experiment:
+  metamon\rl\pretrained.py:217:        # use the base config and the gin file to configure the model
+  metamon\rl\pretrained.py:218:        amago.cli_utils.use_config(
+  metamon\rl\pretrained.py:219:            self.base_config | {"MetamonDiscrete.temperature": action_temperature},
+  metamon\rl\pretrained.py:220:            [self.model_gin_config_path, self.train_gin_config_path],
+  metamon\rl\pretrained.py:221:            finalize=False,
+  metamon\rl\pretrained.py:222:        )
+  metamon\rl\pretrained.py:223:        checkpoint = checkpoint if checkpoint is not None else self.default_checkpoint
+  metamon\rl\pretrained.py:224:        ckpt_path = self.get_path_to_checkpoint(checkpoint)
+  metamon\rl\pretrained.py:225:        ckpt_base_dir = str(Path(ckpt_path).parents[2])
+  metamon\rl\pretrained.py:226:        # build an experiment
+  metamon\rl\pretrained.py:227:        experiment = make_placeholder_experiment(
+  metamon\rl\pretrained.py:228:            ckpt_base_dir=ckpt_base_dir,
+  metamon\rl\pretrained.py:229:            run_name=self.model_name,
+  metamon\rl\pretrained.py:230:            log=log,
+  metamon\rl\pretrained.py:231:            observation_space=self.observation_space,
+  metamon\rl\pretrained.py:1427:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1428:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1429:            battle_backend="metamon",
+  metamon\rl\pretrained.py:1430:            gin_overrides={
+  metamon\rl\pretrained.py:1431:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1432:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1433:                ),
+  metamon\rl\pretrained.py:1434:            },
+  metamon\rl\pretrained.py:1435:        )
+  metamon\rl\pretrained.py:1436:
+> metamon\rl\pretrained.py:1437:    def initialize_agent(
+  metamon\rl\pretrained.py:1438:        self,
+  metamon\rl\pretrained.py:1439:        checkpoint: Optional[int] = None,
+  metamon\rl\pretrained.py:1440:        log: bool = False,
+  metamon\rl\pretrained.py:1441:        action_temperature: float = 1.0,
+  metamon\rl\pretrained.py:1442:    ):
+  metamon\rl\pretrained.py:1443:        member_specs = self._member_specs_from_env()
+  metamon\rl\pretrained.py:1444:        return build_heuristic_ensemble_experiment(
+  metamon\rl\pretrained.py:1445:            reference_model_name="Kakuna",
+  metamon\rl\pretrained.py:1446:            member_specs=member_specs,
+  metamon\rl\pretrained.py:1447:            expected_obs_space=self.observation_space,
+  metamon\rl\pretrained.py:1448:            expected_action_space=self.action_space,
+  metamon\rl\pretrained.py:1449:            log=log,
+  metamon\rl\pretrained.py:1450:            action_temperature=action_temperature,
+  metamon\rl\pretrained.py:1451:        )
+  metamon\rl\pretrained.py:1452:
+  metamon\rl\pretrained.py:1453:
+  metamon\rl\pretrained.py:1454:@pretrained_model()
+  metamon\rl\pretrained.py:1455:class TaurosEnsemble(KakunaEnsemble):
+  metamon\rl\pretrained.py:1456:    """
+  metamon\rl\pretrained.py:1457:    Followup to KakunaEnsemble that also reached #1 on the Showdown leaderboard.
+  metamon\rl\pretrained.py:1521:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1522:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1523:            battle_backend="metamon",
+  metamon\rl\pretrained.py:1524:            gin_overrides={
+  metamon\rl\pretrained.py:1525:                "MetamonGroupedTstepEncoderV2.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1526:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1527:                ),
+  metamon\rl\pretrained.py:1528:            },
+  metamon\rl\pretrained.py:1529:        )
+  metamon\rl\pretrained.py:1530:
+> metamon\rl\pretrained.py:1531:    def initialize_agent(
+  metamon\rl\pretrained.py:1532:        self,
+  metamon\rl\pretrained.py:1533:        checkpoint: Optional[int] = None,
+  metamon\rl\pretrained.py:1534:        log: bool = False,
+  metamon\rl\pretrained.py:1535:        action_temperature: float = 1.0,
+  metamon\rl\pretrained.py:1536:    ):
+  metamon\rl\pretrained.py:1537:        member_specs = self._member_specs_from_env()
+  metamon\rl\pretrained.py:1538:        return build_heuristic_ensemble_experiment(
+  metamon\rl\pretrained.py:1539:            reference_model_name="TaurosV0",
+  metamon\rl\pretrained.py:1540:            member_specs=member_specs,
+  metamon\rl\pretrained.py:1541:            expected_obs_space=self.observation_space,
+  metamon\rl\pretrained.py:1542:            expected_action_space=self.action_space,
+  metamon\rl\pretrained.py:1543:            log=log,
+  metamon\rl\pretrained.py:1544:            action_temperature=action_temperature,
+  metamon\rl\pretrained.py:1545:        )
+  metamon\rl\pretrained.py:1546:
+  metamon\rl\pretrained.py:1547:
+  metamon\rl\pretrained.py:1548:import metamon.rl.experimental.ensemble.register  # noqa: F401 — nickname ensemble agents
+
+

@@ -1,0 +1,724 @@
+﻿
+  metamon\rl\pretrained.py:122:        action_space: Action space configuration. The paper action space is now
+  metamon\rl\pretrained.py:123:            called MinimalActionSpace.
+  metamon\rl\pretrained.py:124:        reward_function: Reward function configuration. Uses original paper reward
+  metamon\rl\pretrained.py:125:            function by default.
+  metamon\rl\pretrained.py:126:        hf_cache_dir: Cache directory for HuggingFace Hub downloads. Note that
+  metamon\rl\pretrained.py:127:            these checkpoint files are large.
+  metamon\rl\pretrained.py:128:        default_checkpoint: Default checkpoint epoch to load. 40 corresponds to
+  metamon\rl\pretrained.py:129:            approximately 1M gradient steps with original paper training settings.
+> metamon\rl\pretrained.py:130:        gin_overrides: Optional dictionary of one-off gin overrides if there's a small tweak to an 
+existing config file.
+  metamon\rl\pretrained.py:131:        battle_backend: The correct default battle backend to use during evaluations of this agent.
+  metamon\rl\pretrained.py:132:            Should indicate a version of the backend pokemon logic that mostly closely replicates 
+the
+  metamon\rl\pretrained.py:133:            version used to collect data and/or reconstruct replays for training.
+  metamon\rl\pretrained.py:134:                'poke-env' is deprecated; maintains the original paper's models.
+  metamon\rl\pretrained.py:135:                'metamon' is the lateset version
+  metamon\rl\pretrained.py:136:                'pokeagent' maintains policies trained (and used as the organizer baselines) 
+during the PokéAgent Challenge
+  metamon\rl\pretrained.py:137:        dataset_config: Path to the dataset config YAML that describes the training data
+  metamon\rl\pretrained.py:138:            composition (replay weights, self-play subsets, custom replay dirs). None for
+  metamon\rl\pretrained.py:139:            HuggingFace models where the dataset composition is lost to time...
+  metamon\rl\pretrained.py:140:        action_temperature: Temperature for temperature-based sampling. Higher temperature means 
+more exploration. Default is 1.0 (no scaling).
+  metamon\rl\pretrained.py:141:    """
+  metamon\rl\pretrained.py:142:
+  metamon\rl\pretrained.py:150:        tokenizer: PokemonTokenizer = get_tokenizer("allreplays-v3"),
+  metamon\rl\pretrained.py:151:        observation_space: ObservationSpace = get_observation_space(
+  metamon\rl\pretrained.py:152:            "DefaultObservationSpace"
+  metamon\rl\pretrained.py:153:        ),
+  metamon\rl\pretrained.py:154:        action_space: ActionSpace = get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:155:        reward_function: RewardFunction = get_reward_function("DefaultShapedReward"),
+  metamon\rl\pretrained.py:156:        hf_cache_dir: Optional[str] = None,
+  metamon\rl\pretrained.py:157:        default_checkpoint: int = 40,
+> metamon\rl\pretrained.py:158:        gin_overrides: Optional[dict] = None,
+  metamon\rl\pretrained.py:159:        battle_backend: str = "metamon",
+  metamon\rl\pretrained.py:160:        dataset_config: Optional[str] = None,
+  metamon\rl\pretrained.py:161:    ):
+  metamon\rl\pretrained.py:162:        self.model_name = model_name
+  metamon\rl\pretrained.py:163:        self.model_gin_config = model_gin_config
+  metamon\rl\pretrained.py:164:        self.train_gin_config = train_gin_config
+  metamon\rl\pretrained.py:165:        self.battle_backend = battle_backend
+  metamon\rl\pretrained.py:166:        self.dataset_config = dataset_config
+  metamon\rl\pretrained.py:167:        self.model_gin_config_path = os.path.join(
+  metamon\rl\pretrained.py:168:            metamon.rl.MODEL_CONFIG_DIR, self.model_gin_config
+  metamon\rl\pretrained.py:169:        )
+  metamon\rl\pretrained.py:170:        self.train_gin_config_path = os.path.join(
+  metamon\rl\pretrained.py:174:        self.tokenizer = tokenizer
+  metamon\rl\pretrained.py:175:        self.observation_space = TokenizedObservationSpace(
+  metamon\rl\pretrained.py:176:            base_obs_space=observation_space,
+  metamon\rl\pretrained.py:177:            tokenizer=tokenizer,
+  metamon\rl\pretrained.py:178:        )
+  metamon\rl\pretrained.py:179:        self.action_space = action_space
+  metamon\rl\pretrained.py:180:        self.reward_function = reward_function
+  metamon\rl\pretrained.py:181:        self.default_checkpoint = default_checkpoint
+> metamon\rl\pretrained.py:182:        self.gin_overrides = gin_overrides
+  metamon\rl\pretrained.py:183:        os.makedirs(self.hf_cache_dir, exist_ok=True)
+  metamon\rl\pretrained.py:184:
+  metamon\rl\pretrained.py:185:    @property
+  metamon\rl\pretrained.py:186:    def base_config(self) -> dict:
+  metamon\rl\pretrained.py:187:        """
+  metamon\rl\pretrained.py:188:        Override to set one-off changes to the gin config files
+  metamon\rl\pretrained.py:189:
+  metamon\rl\pretrained.py:190:        By default, sets the tokenizer and enables faster initialization.
+  metamon\rl\pretrained.py:191:        """
+  metamon\rl\pretrained.py:192:        config = {
+  metamon\rl\pretrained.py:193:            "MetamonTstepEncoder.tokenizer": self.tokenizer,
+  metamon\rl\pretrained.py:194:            # skip cpu-intensive init, because we're going to be replacing the weights
+  metamon\rl\pretrained.py:195:            # with a checkpoint anyway....
+  metamon\rl\pretrained.py:196:            "amago.nets.transformer.SigmaReparam.fast_init": True,
+  metamon\rl\pretrained.py:197:        }
+> metamon\rl\pretrained.py:198:        if self.gin_overrides is not None:
+> metamon\rl\pretrained.py:199:            config.update(self.gin_overrides)
+  metamon\rl\pretrained.py:200:        return config
+  metamon\rl\pretrained.py:201:
+  metamon\rl\pretrained.py:202:    def get_path_to_checkpoint(self, checkpoint: int) -> str:
+  metamon\rl\pretrained.py:203:        # Download checkpoint from HF Hub
+  metamon\rl\pretrained.py:204:        checkpoint_path = huggingface_hub.hf_hub_download(
+  metamon\rl\pretrained.py:205:            repo_id=self.HF_REPO_ID,
+  metamon\rl\pretrained.py:206:            filename=f"{self.model_name}/ckpts/policy_weights/policy_epoch_{checkpoint}.pt",
+  metamon\rl\pretrained.py:207:            cache_dir=self.hf_cache_dir,
+  metamon\rl\pretrained.py:208:        )
+  metamon\rl\pretrained.py:209:        return checkpoint_path
+  metamon\rl\pretrained.py:210:
+  metamon\rl\pretrained.py:211:    def initialize_agent(
+  metamon\rl\pretrained.py:397:class SmallRL_ExtremeFilter(PretrainedModel):
+  metamon\rl\pretrained.py:398:    def __init__(self):
+  metamon\rl\pretrained.py:399:        super().__init__(
+  metamon\rl\pretrained.py:400:            model_name="small-rl-exp-extreme",
+  metamon\rl\pretrained.py:401:            model_gin_config="small_agent.gin",
+  metamon\rl\pretrained.py:402:            train_gin_config="exp_rl.gin",
+  metamon\rl\pretrained.py:403:            default_checkpoint=38,
+  metamon\rl\pretrained.py:404:            action_space=get_action_space("MinimalActionSpace"),
+> metamon\rl\pretrained.py:405:            gin_overrides={
+  metamon\rl\pretrained.py:406:                "amago.agent.exp_filter.beta": 5.0,
+  metamon\rl\pretrained.py:407:                "amago.agent.exp_filter.clip_weights_high": 100.0,
+  metamon\rl\pretrained.py:408:            },
+  metamon\rl\pretrained.py:409:        )
+  metamon\rl\pretrained.py:410:
+  metamon\rl\pretrained.py:411:
+  metamon\rl\pretrained.py:412:@pretrained_model()
+  metamon\rl\pretrained.py:413:class SmallRL_BinaryFilter(PretrainedModel):
+  metamon\rl\pretrained.py:414:    def __init__(self):
+  metamon\rl\pretrained.py:415:        super().__init__(
+  metamon\rl\pretrained.py:416:            model_name="small-rl-binary",
+  metamon\rl\pretrained.py:417:            model_gin_config="small_agent.gin",
+  metamon\rl\pretrained.py:622:            # this model was finetuned from a previous gen9 attempt and has
+  metamon\rl\pretrained.py:623:            # trained for more than 24 total epochs...
+  metamon\rl\pretrained.py:624:            default_checkpoint=24,
+  metamon\rl\pretrained.py:625:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:626:            observation_space=get_observation_space("PAC-TeamPreviewObservationSpace"),
+  metamon\rl\pretrained.py:627:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:628:            # temporarily forced to flash attention until we can verify numerical stability
+  metamon\rl\pretrained.py:629:            # of a switch to a standard pytorch sliding window inference alternative
+> metamon\rl\pretrained.py:630:            gin_overrides={
+  metamon\rl\pretrained.py:631:                "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": 
+amago.nets.transformer.FlashAttention,
+  metamon\rl\pretrained.py:632:                "amago.nets.transformer.FlashAttention.window_size": (32, 0),
+  metamon\rl\pretrained.py:633:            },
+  metamon\rl\pretrained.py:634:            battle_backend="pokeagent",
+  metamon\rl\pretrained.py:635:        )
+  metamon\rl\pretrained.py:636:
+  metamon\rl\pretrained.py:637:
+  metamon\rl\pretrained.py:638:@pretrained_model()
+  metamon\rl\pretrained.py:639:class Minikazam(PretrainedModel):
+  metamon\rl\pretrained.py:640:    """
+  metamon\rl\pretrained.py:641:    An attempt to create an affordable starting point for finetuning.
+  metamon\rl\pretrained.py:642:
+  metamon\rl\pretrained.py:651:            model_gin_config="minikazam.gin",
+  metamon\rl\pretrained.py:652:            train_gin_config="binary_rl.gin",
+  metamon\rl\pretrained.py:653:            default_checkpoint=40,
+  metamon\rl\pretrained.py:654:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:655:            observation_space=get_observation_space("PAC-OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:656:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:657:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:658:            battle_backend="pokeagent",
+> metamon\rl\pretrained.py:659:            gin_overrides={
+  metamon\rl\pretrained.py:660:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:661:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:662:                ),
+  metamon\rl\pretrained.py:663:            },
+  metamon\rl\pretrained.py:664:        )
+  metamon\rl\pretrained.py:665:
+  metamon\rl\pretrained.py:666:
+  metamon\rl\pretrained.py:667:@pretrained_model()
+  metamon\rl\pretrained.py:668:class Abra(PretrainedModel):
+  metamon\rl\pretrained.py:669:    """
+  metamon\rl\pretrained.py:670:    First of a new series of training runs replicating the "Synthetic" agents from the paper *with 
+Gen 9*.
+  metamon\rl\pretrained.py:671:
+  metamon\rl\pretrained.py:682:        super().__init__(
+  metamon\rl\pretrained.py:683:            model_name="abra",
+  metamon\rl\pretrained.py:684:            model_gin_config="medium_multitaskagent.gin",
+  metamon\rl\pretrained.py:685:            train_gin_config="binary_rl.gin",
+  metamon\rl\pretrained.py:686:            default_checkpoint=40,
+  metamon\rl\pretrained.py:687:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:688:            observation_space=get_observation_space("PAC-TeamPreviewObservationSpace"),
+  metamon\rl\pretrained.py:689:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+> metamon\rl\pretrained.py:690:            gin_overrides={
+  metamon\rl\pretrained.py:691:                "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": 
+amago.nets.transformer.FlashAttention,
+  metamon\rl\pretrained.py:692:                "amago.nets.transformer.FlashAttention.window_size": (32, 0),
+  metamon\rl\pretrained.py:693:            },
+  metamon\rl\pretrained.py:694:            battle_backend="pokeagent",
+  metamon\rl\pretrained.py:695:        )
+  metamon\rl\pretrained.py:696:
+  metamon\rl\pretrained.py:697:
+  metamon\rl\pretrained.py:698:@pretrained_model()
+  metamon\rl\pretrained.py:699:class Kadabra(PretrainedModel):
+  metamon\rl\pretrained.py:700:    """
+  metamon\rl\pretrained.py:701:    A second attempt at self-play on gens1-4 & 9 that was featured in the PokéAgent Challenge.
+  metamon\rl\pretrained.py:702:
+  metamon\rl\pretrained.py:708:            model_name="kadabra",
+  metamon\rl\pretrained.py:709:            model_gin_config="medium_multitaskagent.gin",
+  metamon\rl\pretrained.py:710:            train_gin_config="binary_rl.gin",
+  metamon\rl\pretrained.py:711:            default_checkpoint=46,
+  metamon\rl\pretrained.py:712:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:713:            observation_space=get_observation_space("TeamPreviewObservationSpace"),
+  metamon\rl\pretrained.py:714:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:715:            battle_backend="pokeagent",
+> metamon\rl\pretrained.py:716:            gin_overrides={
+  metamon\rl\pretrained.py:717:                "amago.nets.traj_encoders.TformerTrajEncoder.attention_type": 
+amago.nets.transformer.FlashAttention,
+  metamon\rl\pretrained.py:718:                "amago.nets.transformer.FlashAttention.window_size": (32, 0),
+  metamon\rl\pretrained.py:719:            },
+  metamon\rl\pretrained.py:720:        )
+  metamon\rl\pretrained.py:721:
+  metamon\rl\pretrained.py:722:
+  metamon\rl\pretrained.py:723:@pretrained_model()
+  metamon\rl\pretrained.py:724:class Kadabra2(PretrainedModel):
+  metamon\rl\pretrained.py:725:    """
+  metamon\rl\pretrained.py:726:    A third attempt at self-play on gens1-4 & 9 that was featured in the PokéAgent Challenge.
+  metamon\rl\pretrained.py:727:
+  metamon\rl\pretrained.py:728:    Confusingly, this policy played under the username "PAC-MM-Alakazam" for most of the 
+challange, and held
+  metamon\rl\pretrained.py:739:            model_gin_config="alakazam2.gin",
+  metamon\rl\pretrained.py:740:            train_gin_config="alakazam2.gin",
+  metamon\rl\pretrained.py:741:            default_checkpoint=44,
+  metamon\rl\pretrained.py:742:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:743:            observation_space=get_observation_space("PAC-OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:744:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:745:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:746:            battle_backend="pokeagent",
+> metamon\rl\pretrained.py:747:            gin_overrides={
+  metamon\rl\pretrained.py:748:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:749:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:750:                ),
+  metamon\rl\pretrained.py:751:            },
+  metamon\rl\pretrained.py:752:        )
+  metamon\rl\pretrained.py:753:
+  metamon\rl\pretrained.py:754:
+  metamon\rl\pretrained.py:755:@pretrained_model()
+  metamon\rl\pretrained.py:756:class Kadabra3(PretrainedModel):
+  metamon\rl\pretrained.py:757:    """
+  metamon\rl\pretrained.py:758:    A fourth attempt at self-play on gens1-4 & 9 that was featured in the PokéAgent Challenge.
+  metamon\rl\pretrained.py:759:
+  metamon\rl\pretrained.py:767:            model_gin_config="alakazam2.gin",
+  metamon\rl\pretrained.py:768:            train_gin_config="alakazam3.gin",
+  metamon\rl\pretrained.py:769:            default_checkpoint=20,
+  metamon\rl\pretrained.py:770:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:771:            observation_space=get_observation_space("PAC-OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:772:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:773:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:774:            battle_backend="pokeagent",
+> metamon\rl\pretrained.py:775:            gin_overrides={
+  metamon\rl\pretrained.py:776:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:777:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:778:                ),
+  metamon\rl\pretrained.py:779:            },
+  metamon\rl\pretrained.py:780:        )
+  metamon\rl\pretrained.py:781:
+  metamon\rl\pretrained.py:782:
+  metamon\rl\pretrained.py:783:@pretrained_model()
+  metamon\rl\pretrained.py:784:class Kadabra4(PretrainedModel):
+  metamon\rl\pretrained.py:785:    """
+  metamon\rl\pretrained.py:786:    A fifth attempt at self-play on gens1-4 & 9 that was featured in the PokéAgent Challenge.
+  metamon\rl\pretrained.py:787:
+  metamon\rl\pretrained.py:800:            model_gin_config="alakazam4.gin",
+  metamon\rl\pretrained.py:801:            train_gin_config="alakazam3.gin",
+  metamon\rl\pretrained.py:802:            default_checkpoint=50,
+  metamon\rl\pretrained.py:803:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:804:            observation_space=get_observation_space("PAC-OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:805:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:806:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:807:            battle_backend="pokeagent",
+> metamon\rl\pretrained.py:808:            gin_overrides={
+  metamon\rl\pretrained.py:809:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:810:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:811:                ),
+  metamon\rl\pretrained.py:812:            },
+  metamon\rl\pretrained.py:813:        )
+  metamon\rl\pretrained.py:814:
+  metamon\rl\pretrained.py:815:
+  metamon\rl\pretrained.py:816:@pretrained_model()
+  metamon\rl\pretrained.py:817:class Alakazam(PretrainedModel):
+  metamon\rl\pretrained.py:818:    """
+  metamon\rl\pretrained.py:819:    This policy patches a bug (https://github.com/UT-Austin-RPL/metamon/pull/54) that impacted all 
+PokéAgnet Challenge training runs.
+  metamon\rl\pretrained.py:820:
+  metamon\rl\pretrained.py:832:            model_gin_config="alakazam4.gin",
+  metamon\rl\pretrained.py:833:            train_gin_config="alakazam3.gin",
+  metamon\rl\pretrained.py:834:            default_checkpoint=8,
+  metamon\rl\pretrained.py:835:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:836:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:837:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:838:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:839:            battle_backend="metamon",
+> metamon\rl\pretrained.py:840:            gin_overrides={
+  metamon\rl\pretrained.py:841:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:842:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:843:                ),
+  metamon\rl\pretrained.py:844:            },
+  metamon\rl\pretrained.py:845:        )
+  metamon\rl\pretrained.py:846:
+  metamon\rl\pretrained.py:847:
+  metamon\rl\pretrained.py:848:@pretrained_model()
+  metamon\rl\pretrained.py:849:class Superkazam(PretrainedModel):
+  metamon\rl\pretrained.py:850:    """
+  metamon\rl\pretrained.py:851:    Revisits the PokéAgent Challenge dataset at a model size closer to the paper's SyntheticRLV2 
+configuration (~140M params).
+  metamon\rl\pretrained.py:852:
+  metamon\rl\pretrained.py:862:            model_gin_config="superkazam.gin",
+  metamon\rl\pretrained.py:863:            train_gin_config="alakazam3.gin",
+  metamon\rl\pretrained.py:864:            default_checkpoint=50,
+  metamon\rl\pretrained.py:865:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:866:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:867:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:868:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:869:            battle_backend="metamon",
+> metamon\rl\pretrained.py:870:            gin_overrides={
+  metamon\rl\pretrained.py:871:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:872:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:873:                ),
+  metamon\rl\pretrained.py:874:            },
+  metamon\rl\pretrained.py:875:        )
+  metamon\rl\pretrained.py:876:
+  metamon\rl\pretrained.py:877:
+  metamon\rl\pretrained.py:878:@pretrained_model()
+  metamon\rl\pretrained.py:879:class Kakuna(PretrainedModel):
+  metamon\rl\pretrained.py:880:    """
+  metamon\rl\pretrained.py:881:    The current best Metamon policy.
+  metamon\rl\pretrained.py:882:
+  metamon\rl\pretrained.py:899:            model_gin_config="superkazam.gin",
+  metamon\rl\pretrained.py:900:            train_gin_config="kakuna.gin",
+  metamon\rl\pretrained.py:901:            default_checkpoint=34,
+  metamon\rl\pretrained.py:902:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:903:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:904:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:905:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:906:            battle_backend="metamon",
+> metamon\rl\pretrained.py:907:            gin_overrides={
+  metamon\rl\pretrained.py:908:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:909:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:910:                ),
+  metamon\rl\pretrained.py:911:            },
+  metamon\rl\pretrained.py:912:        )
+  metamon\rl\pretrained.py:913:
+  metamon\rl\pretrained.py:914:
+  metamon\rl\pretrained.py:915:#################################################
+  metamon\rl\pretrained.py:916:### Gen 1 Specialists (Feb 2026 - April 2026) ###
+  metamon\rl\pretrained.py:917:#################################################
+  metamon\rl\pretrained.py:918:"""
+  metamon\rl\pretrained.py:919:Post-PokéAgent Challenge effort to reach the top of the Gen 1 OU leaderboard.
+  metamon\rl\pretrained.py:936:            model_gin_config="smaller_multitaskagent.gin",
+  metamon\rl\pretrained.py:937:            train_gin_config="alakazam3.gin",
+  metamon\rl\pretrained.py:938:            default_checkpoint=26,
+  metamon\rl\pretrained.py:939:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:940:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:941:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:942:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:943:            battle_backend="metamon",
+> metamon\rl\pretrained.py:944:            gin_overrides={
+  metamon\rl\pretrained.py:945:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:946:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:947:                ),
+  metamon\rl\pretrained.py:948:            },
+  metamon\rl\pretrained.py:949:        )
+  metamon\rl\pretrained.py:950:
+  metamon\rl\pretrained.py:951:
+  metamon\rl\pretrained.py:952:@pretrained_model()
+  metamon\rl\pretrained.py:953:class V2ASeed2(PretrainedModel):
+  metamon\rl\pretrained.py:954:    def __init__(self):
+  metamon\rl\pretrained.py:955:        super().__init__(
+  metamon\rl\pretrained.py:956:            model_name="v2_small_rl_baseline_track_metrics",
+  metamon\rl\pretrained.py:957:            model_gin_config="smaller_multitaskagent.gin",
+  metamon\rl\pretrained.py:958:            train_gin_config="alakazam3.gin",
+  metamon\rl\pretrained.py:959:            default_checkpoint=26,
+  metamon\rl\pretrained.py:960:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:961:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:962:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:963:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:964:            battle_backend="metamon",
+> metamon\rl\pretrained.py:965:            gin_overrides={
+  metamon\rl\pretrained.py:966:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:967:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:968:                ),
+  metamon\rl\pretrained.py:969:            },
+  metamon\rl\pretrained.py:970:        )
+  metamon\rl\pretrained.py:971:
+  metamon\rl\pretrained.py:972:
+  metamon\rl\pretrained.py:973:@pretrained_model()
+  metamon\rl\pretrained.py:974:class V2ABeta01(PretrainedModel):
+  metamon\rl\pretrained.py:975:    def __init__(self):
+  metamon\rl\pretrained.py:976:        super().__init__(
+  metamon\rl\pretrained.py:977:            model_name="beta_01",
+  metamon\rl\pretrained.py:978:            model_gin_config="smaller_multitaskagent.gin",
+  metamon\rl\pretrained.py:979:            train_gin_config="alakazam_beta0.1.gin",
+  metamon\rl\pretrained.py:980:            default_checkpoint=20,
+  metamon\rl\pretrained.py:981:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:982:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:983:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:984:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:985:            battle_backend="metamon",
+> metamon\rl\pretrained.py:986:            gin_overrides={
+  metamon\rl\pretrained.py:987:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:988:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:989:                ),
+  metamon\rl\pretrained.py:990:            },
+  metamon\rl\pretrained.py:991:        )
+  metamon\rl\pretrained.py:992:
+  metamon\rl\pretrained.py:993:
+  metamon\rl\pretrained.py:994:@pretrained_model()
+  metamon\rl\pretrained.py:995:class V2ABeta1(PretrainedModel):
+  metamon\rl\pretrained.py:996:    def __init__(self):
+  metamon\rl\pretrained.py:997:        super().__init__(
+  metamon\rl\pretrained.py:998:            model_name="beta_1",
+  metamon\rl\pretrained.py:999:            model_gin_config="smaller_multitaskagent.gin",
+  metamon\rl\pretrained.py:1000:            train_gin_config="alakazam_beta1.gin",
+  metamon\rl\pretrained.py:1001:            default_checkpoint=20,
+  metamon\rl\pretrained.py:1002:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:1003:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:1004:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1005:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1006:            battle_backend="metamon",
+> metamon\rl\pretrained.py:1007:            gin_overrides={
+  metamon\rl\pretrained.py:1008:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1009:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1010:                ),
+  metamon\rl\pretrained.py:1011:            },
+  metamon\rl\pretrained.py:1012:        )
+  metamon\rl\pretrained.py:1013:
+  metamon\rl\pretrained.py:1014:
+  metamon\rl\pretrained.py:1015:@pretrained_model()
+  metamon\rl\pretrained.py:1016:class V2ABeta3(PretrainedModel):
+  metamon\rl\pretrained.py:1017:    def __init__(self):
+  metamon\rl\pretrained.py:1018:        super().__init__(
+  metamon\rl\pretrained.py:1019:            model_name="beta_3",
+  metamon\rl\pretrained.py:1020:            model_gin_config="smaller_multitaskagent.gin",
+  metamon\rl\pretrained.py:1021:            train_gin_config="alakazam_beta3.gin",
+  metamon\rl\pretrained.py:1022:            default_checkpoint=20,
+  metamon\rl\pretrained.py:1023:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:1024:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:1025:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1026:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1027:            battle_backend="metamon",
+> metamon\rl\pretrained.py:1028:            gin_overrides={
+  metamon\rl\pretrained.py:1029:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1030:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1031:                ),
+  metamon\rl\pretrained.py:1032:            },
+  metamon\rl\pretrained.py:1033:        )
+  metamon\rl\pretrained.py:1034:
+  metamon\rl\pretrained.py:1035:
+  metamon\rl\pretrained.py:1036:@pretrained_model()
+  metamon\rl\pretrained.py:1037:class V2ABeta10(PretrainedModel):
+  metamon\rl\pretrained.py:1038:    def __init__(self):
+  metamon\rl\pretrained.py:1039:        super().__init__(
+  metamon\rl\pretrained.py:1040:            model_name="beta_10",
+  metamon\rl\pretrained.py:1041:            model_gin_config="smaller_multitaskagent.gin",
+  metamon\rl\pretrained.py:1042:            train_gin_config="alakazam_beta10.gin",
+  metamon\rl\pretrained.py:1043:            default_checkpoint=20,
+  metamon\rl\pretrained.py:1044:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:1045:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:1046:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1047:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1048:            battle_backend="metamon",
+> metamon\rl\pretrained.py:1049:            gin_overrides={
+  metamon\rl\pretrained.py:1050:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1051:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1052:                ),
+  metamon\rl\pretrained.py:1053:            },
+  metamon\rl\pretrained.py:1054:        )
+  metamon\rl\pretrained.py:1055:
+  metamon\rl\pretrained.py:1056:
+  metamon\rl\pretrained.py:1057:@pretrained_model()
+  metamon\rl\pretrained.py:1058:class V2ABNBeta3HLGauss(PretrainedModel):
+  metamon\rl\pretrained.py:1059:    def __init__(self):
+  metamon\rl\pretrained.py:1060:        super().__init__(
+  metamon\rl\pretrained.py:1061:            model_name="bn_beta3_hlgauss",
+  metamon\rl\pretrained.py:1062:            model_gin_config="smaller_multitaskagent.gin",
+  metamon\rl\pretrained.py:1063:            train_gin_config="alakazam_bnorm_beta3_hlgauss.gin",
+  metamon\rl\pretrained.py:1064:            default_checkpoint=26,
+  metamon\rl\pretrained.py:1065:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:1066:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:1067:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1068:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1069:            battle_backend="metamon",
+> metamon\rl\pretrained.py:1070:            gin_overrides={
+  metamon\rl\pretrained.py:1071:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1072:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1073:                ),
+  metamon\rl\pretrained.py:1074:            },
+  metamon\rl\pretrained.py:1075:        )
+  metamon\rl\pretrained.py:1076:
+  metamon\rl\pretrained.py:1077:
+  metamon\rl\pretrained.py:1078:@pretrained_model()
+  metamon\rl\pretrained.py:1079:class V2ABNBeta3HLGaussVanilla(PretrainedModel):
+  metamon\rl\pretrained.py:1080:    def __init__(self):
+  metamon\rl\pretrained.py:1081:        super().__init__(
+  metamon\rl\pretrained.py:1082:            model_name="bn_beta3_hlgauss_vanilla",
+  metamon\rl\pretrained.py:1083:            model_gin_config="smaller_multitaskagent.gin",
+  metamon\rl\pretrained.py:1084:            train_gin_config="alakazam_bnorm_beta3_hlgauss_vanilla.gin",
+  metamon\rl\pretrained.py:1085:            default_checkpoint=26,
+  metamon\rl\pretrained.py:1086:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:1087:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:1088:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1089:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1090:            battle_backend="metamon",
+> metamon\rl\pretrained.py:1091:            gin_overrides={
+  metamon\rl\pretrained.py:1092:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1093:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1094:                ),
+  metamon\rl\pretrained.py:1095:            },
+  metamon\rl\pretrained.py:1096:        )
+  metamon\rl\pretrained.py:1097:
+  metamon\rl\pretrained.py:1098:
+  metamon\rl\pretrained.py:1099:@pretrained_model()
+  metamon\rl\pretrained.py:1100:class V2ABNBeta3(PretrainedModel):
+  metamon\rl\pretrained.py:1101:    def __init__(self):
+  metamon\rl\pretrained.py:1102:        super().__init__(
+  metamon\rl\pretrained.py:1103:            model_name="bn_beta3",
+  metamon\rl\pretrained.py:1104:            model_gin_config="smaller_multitaskagent.gin",
+  metamon\rl\pretrained.py:1105:            train_gin_config="alakazam_bnorm_beta3.gin",
+  metamon\rl\pretrained.py:1106:            default_checkpoint=20,
+  metamon\rl\pretrained.py:1107:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:1108:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:1109:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1110:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1111:            battle_backend="metamon",
+> metamon\rl\pretrained.py:1112:            gin_overrides={
+  metamon\rl\pretrained.py:1113:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1114:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1115:                ),
+  metamon\rl\pretrained.py:1116:            },
+  metamon\rl\pretrained.py:1117:        )
+  metamon\rl\pretrained.py:1118:
+  metamon\rl\pretrained.py:1119:
+  metamon\rl\pretrained.py:1120:@pretrained_model()
+  metamon\rl\pretrained.py:1121:class V2AMixedGens(PretrainedModel):
+  metamon\rl\pretrained.py:1122:    def __init__(self):
+  metamon\rl\pretrained.py:1123:        super().__init__(
+  metamon\rl\pretrained.py:1124:            model_name="v2_small_rl_baseline_all_gens",
+  metamon\rl\pretrained.py:1126:            train_gin_config="alakazam3.gin",
+  metamon\rl\pretrained.py:1127:            # this one trained all the way out to epoch 80!
+  metamon\rl\pretrained.py:1128:            default_checkpoint=26,
+  metamon\rl\pretrained.py:1129:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:1130:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:1131:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1132:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1133:            battle_backend="metamon",
+> metamon\rl\pretrained.py:1134:            gin_overrides={
+  metamon\rl\pretrained.py:1135:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1136:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1137:                ),
+  metamon\rl\pretrained.py:1138:            },
+  metamon\rl\pretrained.py:1139:        )
+  metamon\rl\pretrained.py:1140:
+  metamon\rl\pretrained.py:1141:
+  metamon\rl\pretrained.py:1142:@pretrained_model()
+  metamon\rl\pretrained.py:1143:class V2ANoMG(PretrainedModel):
+  metamon\rl\pretrained.py:1144:    def __init__(self):
+  metamon\rl\pretrained.py:1145:        super().__init__(
+  metamon\rl\pretrained.py:1146:            model_name="v2_small_rl_baseline_nomg_g99",
+  metamon\rl\pretrained.py:1147:            model_gin_config="smaller_multitaskagent.gin",
+  metamon\rl\pretrained.py:1148:            train_gin_config="alakazam3.gin",
+  metamon\rl\pretrained.py:1149:            default_checkpoint=26,
+  metamon\rl\pretrained.py:1150:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:1151:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:1152:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1153:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1154:            battle_backend="metamon",
+> metamon\rl\pretrained.py:1155:            gin_overrides={
+  metamon\rl\pretrained.py:1156:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1157:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1158:                ),
+  metamon\rl\pretrained.py:1159:                "MultiTaskAgent.use_multigamma": False,
+  metamon\rl\pretrained.py:1160:                "MultiTaskAgent.gamma": 0.99,
+  metamon\rl\pretrained.py:1161:            },
+  metamon\rl\pretrained.py:1162:        )
+  metamon\rl\pretrained.py:1163:
+  metamon\rl\pretrained.py:1164:
+  metamon\rl\pretrained.py:1165:@pretrained_model()
+  metamon\rl\pretrained.py:1166:class V2AIL(PretrainedModel):
+  metamon\rl\pretrained.py:1167:    def __init__(self):
+  metamon\rl\pretrained.py:1170:            model_gin_config="smaller_multitaskagent.gin",
+  metamon\rl\pretrained.py:1171:            train_gin_config="il.gin",
+  metamon\rl\pretrained.py:1172:            default_checkpoint=26,
+  metamon\rl\pretrained.py:1173:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:1174:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:1175:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1176:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1177:            battle_backend="metamon",
+> metamon\rl\pretrained.py:1178:            gin_overrides={
+  metamon\rl\pretrained.py:1179:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1180:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1181:                ),
+  metamon\rl\pretrained.py:1182:                "MetamonAMAGOExperiment.learning_rate": 1.25e-4,
+  metamon\rl\pretrained.py:1183:                "MetamonAMAGOExperiment.lr_warmup_steps": 2000,
+  metamon\rl\pretrained.py:1184:            },
+  metamon\rl\pretrained.py:1185:        )
+  metamon\rl\pretrained.py:1186:
+  metamon\rl\pretrained.py:1187:
+  metamon\rl\pretrained.py:1188:@pretrained_model()
+  metamon\rl\pretrained.py:1189:class V2AGroupedV2ISFilter(PretrainedModel):
+  metamon\rl\pretrained.py:1190:    def __init__(self):
+  metamon\rl\pretrained.py:1193:            model_gin_config="smaller_multitaskagent_grouped_v2.gin",
+  metamon\rl\pretrained.py:1194:            train_gin_config="alakazam3_isfilter.gin",
+  metamon\rl\pretrained.py:1195:            default_checkpoint=88,
+  metamon\rl\pretrained.py:1196:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:1197:            observation_space=get_observation_space("GroupedObservationSpace"),
+  metamon\rl\pretrained.py:1198:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1199:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1200:            battle_backend="metamon",
+> metamon\rl\pretrained.py:1201:            gin_overrides={
+  metamon\rl\pretrained.py:1202:                "MetamonGroupedTstepEncoderV2.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1203:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1204:                ),
+  metamon\rl\pretrained.py:1205:            },
+  metamon\rl\pretrained.py:1206:        )
+  metamon\rl\pretrained.py:1207:
+  metamon\rl\pretrained.py:1208:
+  metamon\rl\pretrained.py:1209:@pretrained_model()
+  metamon\rl\pretrained.py:1210:class V2AGroupedV2Patched(PretrainedModel):
+  metamon\rl\pretrained.py:1211:    def __init__(self):
+  metamon\rl\pretrained.py:1212:        super().__init__(
+  metamon\rl\pretrained.py:1213:            model_name="v2_small_rl_grouped_v2_patched",
+  metamon\rl\pretrained.py:1214:            model_gin_config="smaller_multitaskagent_grouped_v2.gin",
+  metamon\rl\pretrained.py:1215:            train_gin_config="alakazam3.gin",
+  metamon\rl\pretrained.py:1216:            default_checkpoint=26,
+  metamon\rl\pretrained.py:1217:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:1218:            observation_space=get_observation_space("GroupedObservationSpace"),
+  metamon\rl\pretrained.py:1219:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1220:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1221:            battle_backend="metamon",
+> metamon\rl\pretrained.py:1222:            gin_overrides={
+  metamon\rl\pretrained.py:1223:                "MetamonGroupedTstepEncoderV2.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1224:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1225:                ),
+  metamon\rl\pretrained.py:1226:            },
+  metamon\rl\pretrained.py:1227:        )
+  metamon\rl\pretrained.py:1228:
+  metamon\rl\pretrained.py:1229:
+  metamon\rl\pretrained.py:1230:@pretrained_model()
+  metamon\rl\pretrained.py:1231:class V2AGroupedV2ArchAblation(PretrainedModel):
+  metamon\rl\pretrained.py:1232:    """Grouped V2 arch trained on the V2A baseline data mix (pac-base 60%, pac-exploratory 35%).
+  metamon\rl\pretrained.py:1233:
+  metamon\rl\pretrained.py:1234:    Paired with V2AGroupedV2DataAblation to isolate the effect of the Tauros data mix
+  metamon\rl\pretrained.py:1241:            model_gin_config="smaller_multitaskagent_grouped_v2_arch.gin",
+  metamon\rl\pretrained.py:1242:            train_gin_config="grouped_v2_large_isfilter.gin",
+  metamon\rl\pretrained.py:1243:            default_checkpoint=32,
+  metamon\rl\pretrained.py:1244:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:1245:            observation_space=get_observation_space("GroupedObservationSpace"),
+  metamon\rl\pretrained.py:1246:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1247:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1248:            battle_backend="metamon",
+> metamon\rl\pretrained.py:1249:            gin_overrides={
+  metamon\rl\pretrained.py:1250:                "MetamonGroupedTstepEncoderV2.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1251:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1252:                ),
+  metamon\rl\pretrained.py:1253:            },
+  metamon\rl\pretrained.py:1254:        )
+  metamon\rl\pretrained.py:1255:
+  metamon\rl\pretrained.py:1256:
+  metamon\rl\pretrained.py:1257:@pretrained_model()
+  metamon\rl\pretrained.py:1258:class V2AGroupedV2DataAblation(PretrainedModel):
+  metamon\rl\pretrained.py:1259:    def __init__(self):
+  metamon\rl\pretrained.py:1260:        super().__init__(
+  metamon\rl\pretrained.py:1261:            model_name="v2_grouped_v2_arch_data_ablation",
+  metamon\rl\pretrained.py:1262:            model_gin_config="smaller_multitaskagent_grouped_v2_arch.gin",
+  metamon\rl\pretrained.py:1263:            train_gin_config="grouped_v2_large_isfilter.gin",
+  metamon\rl\pretrained.py:1264:            default_checkpoint=90,
+  metamon\rl\pretrained.py:1265:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:1266:            observation_space=get_observation_space("GroupedObservationSpace"),
+  metamon\rl\pretrained.py:1267:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1268:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1269:            battle_backend="metamon",
+> metamon\rl\pretrained.py:1270:            gin_overrides={
+  metamon\rl\pretrained.py:1271:                "MetamonGroupedTstepEncoderV2.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1272:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1273:                ),
+  metamon\rl\pretrained.py:1274:            },
+  metamon\rl\pretrained.py:1275:        )
+  metamon\rl\pretrained.py:1276:
+  metamon\rl\pretrained.py:1277:
+  metamon\rl\pretrained.py:1278:@pretrained_model()
+  metamon\rl\pretrained.py:1279:class TaurosV0(PretrainedModel):
+  metamon\rl\pretrained.py:1280:    def __init__(self):
+  metamon\rl\pretrained.py:1281:        super().__init__(
+  metamon\rl\pretrained.py:1282:            model_name="tauros-v0",
+  metamon\rl\pretrained.py:1283:            model_gin_config="grouped_v2_50m.gin",
+  metamon\rl\pretrained.py:1284:            train_gin_config="grouped_v2_large_isfilter.gin",
+  metamon\rl\pretrained.py:1285:            default_checkpoint=62,
+  metamon\rl\pretrained.py:1286:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:1287:            observation_space=get_observation_space("GroupedObservationSpace"),
+  metamon\rl\pretrained.py:1288:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1289:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1290:            battle_backend="metamon",
+> metamon\rl\pretrained.py:1291:            gin_overrides={
+  metamon\rl\pretrained.py:1292:                "MetamonGroupedTstepEncoderV2.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1293:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1294:                ),
+  metamon\rl\pretrained.py:1295:            },
+  metamon\rl\pretrained.py:1296:        )
+  metamon\rl\pretrained.py:1297:
+  metamon\rl\pretrained.py:1298:
+  metamon\rl\pretrained.py:1299:@pretrained_model()
+  metamon\rl\pretrained.py:1300:class KakunaEnsemble(PretrainedModel):
+  metamon\rl\pretrained.py:1301:    """
+  metamon\rl\pretrained.py:1302:    A prototype version of ensembling metamon policies.
+  metamon\rl\pretrained.py:1303:
+  metamon\rl\pretrained.py:1422:            model_gin_config="superkazam.gin",
+  metamon\rl\pretrained.py:1423:            train_gin_config="kakuna.gin",
+  metamon\rl\pretrained.py:1424:            default_checkpoint=34,
+  metamon\rl\pretrained.py:1425:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:1426:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:1427:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1428:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1429:            battle_backend="metamon",
+> metamon\rl\pretrained.py:1430:            gin_overrides={
+  metamon\rl\pretrained.py:1431:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1432:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1433:                ),
+  metamon\rl\pretrained.py:1434:            },
+  metamon\rl\pretrained.py:1435:        )
+  metamon\rl\pretrained.py:1436:
+  metamon\rl\pretrained.py:1437:    def initialize_agent(
+  metamon\rl\pretrained.py:1438:        self,
+  metamon\rl\pretrained.py:1439:        checkpoint: Optional[int] = None,
+  metamon\rl\pretrained.py:1440:        log: bool = False,
+  metamon\rl\pretrained.py:1441:        action_temperature: float = 1.0,
+  metamon\rl\pretrained.py:1442:    ):
+  metamon\rl\pretrained.py:1516:            model_gin_config="grouped_v2_50m.gin",
+  metamon\rl\pretrained.py:1517:            train_gin_config="grouped_v2_large_isfilter.gin",
+  metamon\rl\pretrained.py:1518:            default_checkpoint=62,
+  metamon\rl\pretrained.py:1519:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:1520:            observation_space=get_observation_space("GroupedObservationSpace"),
+  metamon\rl\pretrained.py:1521:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:1522:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:1523:            battle_backend="metamon",
+> metamon\rl\pretrained.py:1524:            gin_overrides={
+  metamon\rl\pretrained.py:1525:                "MetamonGroupedTstepEncoderV2.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:1526:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:1527:                ),
+  metamon\rl\pretrained.py:1528:            },
+  metamon\rl\pretrained.py:1529:        )
+  metamon\rl\pretrained.py:1530:
+  metamon\rl\pretrained.py:1531:    def initialize_agent(
+  metamon\rl\pretrained.py:1532:        self,
+  metamon\rl\pretrained.py:1533:        checkpoint: Optional[int] = None,
+  metamon\rl\pretrained.py:1534:        log: bool = False,
+  metamon\rl\pretrained.py:1535:        action_temperature: float = 1.0,
+  metamon\rl\pretrained.py:1536:    ):
+
+

@@ -1,0 +1,98 @@
+﻿
+> metamon\rl\pretrained.py:879:class Kakuna(PretrainedModel):
+  metamon\rl\pretrained.py:880:    """
+  metamon\rl\pretrained.py:881:    The current best Metamon policy.
+  metamon\rl\pretrained.py:882:
+  metamon\rl\pretrained.py:883:    Superkazam, finetuned on a dataset of self-play battles collected at increased temperature for 
+exploration and value learning (+7.8M battles).
+  metamon\rl\pretrained.py:884:
+  metamon\rl\pretrained.py:885:    After > 700 total games played over a span of a month, we estimate GXEs vs. humans (with 
+"competitive" TeamSet) of:
+  metamon\rl\pretrained.py:886:
+  metamon\rl\pretrained.py:887:    gen1ou: ~82%
+  metamon\rl\pretrained.py:888:    gen2ou: ~70%
+  metamon\rl\pretrained.py:889:    gen3ou: ~63%
+  metamon\rl\pretrained.py:890:    gen4ou: ~64%
+  metamon\rl\pretrained.py:891:    gen9ou: ~71%
+  metamon\rl\pretrained.py:892:
+  metamon\rl\pretrained.py:893:    Evals against the most important (modern) metamon baselines are available here: 
+https://docs.google.com/spreadsheets/d/1lU8tQ0tnnupY28kIyK6FVtvPmxLSVT9_slLShOhRsqg/edit?usp=sharing
+  metamon\rl\pretrained.py:894:    """
+  metamon\rl\pretrained.py:895:
+  metamon\rl\pretrained.py:896:    def __init__(self):
+  metamon\rl\pretrained.py:897:        super().__init__(
+  metamon\rl\pretrained.py:898:            model_name="kakuna",
+  metamon\rl\pretrained.py:899:            model_gin_config="superkazam.gin",
+  metamon\rl\pretrained.py:900:            train_gin_config="kakuna.gin",
+  metamon\rl\pretrained.py:901:            default_checkpoint=34,
+  metamon\rl\pretrained.py:902:            action_space=get_action_space("DefaultActionSpace"),
+  metamon\rl\pretrained.py:903:            observation_space=get_observation_space("OpponentMoveObservationSpace"),
+  metamon\rl\pretrained.py:904:            reward_function=get_reward_function("AggressiveShapedReward"),
+  metamon\rl\pretrained.py:905:            tokenizer=get_tokenizer("DefaultObservationSpace-v1"),
+  metamon\rl\pretrained.py:906:            battle_backend="metamon",
+  metamon\rl\pretrained.py:907:            gin_overrides={
+  metamon\rl\pretrained.py:908:                "MetamonPerceiverTstepEncoder.tokenizer": get_tokenizer(
+  metamon\rl\pretrained.py:909:                    "DefaultObservationSpace-v1"
+  metamon\rl\pretrained.py:910:                ),
+  metamon\rl\pretrained.py:911:            },
+  metamon\rl\pretrained.py:912:        )
+  metamon\rl\pretrained.py:913:
+  metamon\rl\pretrained.py:914:
+  metamon\rl\pretrained.py:915:#################################################
+  metamon\rl\pretrained.py:916:### Gen 1 Specialists (Feb 2026 - April 2026) ###
+  metamon\rl\pretrained.py:917:#################################################
+  metamon\rl\pretrained.py:918:"""
+  metamon\rl\pretrained.py:919:Post-PokéAgent Challenge effort to reach the top of the Gen 1 OU leaderboard.
+  metamon\rl\pretrained.py:920:
+  metamon\rl\pretrained.py:921:All of these policies are trained to play Gen 1 OU specifically.
+  metamon\rl\pretrained.py:922:
+  metamon\rl\pretrained.py:923:The many "V2A" runs are small-scale (~12-15M param) RL hparam ablations. 
+  metamon\rl\pretrained.py:924:They all have pretty similar performance, in the range between SyntheticRLV2
+> metamon\rl\pretrained.py:1300:class KakunaEnsemble(PretrainedModel):
+  metamon\rl\pretrained.py:1301:    """
+  metamon\rl\pretrained.py:1302:    A prototype version of ensembling metamon policies.
+  metamon\rl\pretrained.py:1303:
+  metamon\rl\pretrained.py:1304:    Notably became the first Metamon agent to reach #1 on the Showdown leaderboard.
+  metamon\rl\pretrained.py:1305:    """
+  metamon\rl\pretrained.py:1306:
+  metamon\rl\pretrained.py:1307:    # these gxe scores are incorrect
+  metamon\rl\pretrained.py:1308:    MEMBER_SPECS = [
+  metamon\rl\pretrained.py:1309:        EnsembleMemberSpec(
+  metamon\rl\pretrained.py:1310:            model_name="Kakuna",
+  metamon\rl\pretrained.py:1311:            checkpoint=34,
+  metamon\rl\pretrained.py:1312:            gxe=0.75,
+  metamon\rl\pretrained.py:1313:            proposer_bias=1.10,
+  metamon\rl\pretrained.py:1314:            judge_bias=1.15,
+  metamon\rl\pretrained.py:1315:            shortlist_k=3,
+  metamon\rl\pretrained.py:1316:        ),
+  metamon\rl\pretrained.py:1317:        EnsembleMemberSpec(
+  metamon\rl\pretrained.py:1318:            model_name="Kakuna",
+  metamon\rl\pretrained.py:1319:            checkpoint=28,
+  metamon\rl\pretrained.py:1320:            gxe=0.78,
+  metamon\rl\pretrained.py:1321:            proposer_bias=1.20,
+  metamon\rl\pretrained.py:1322:            judge_bias=1.15,
+  metamon\rl\pretrained.py:1323:            shortlist_k=3,
+  metamon\rl\pretrained.py:1324:        ),
+  metamon\rl\pretrained.py:1325:        EnsembleMemberSpec(
+  metamon\rl\pretrained.py:1326:            model_name="Kakuna",
+  metamon\rl\pretrained.py:1327:            checkpoint=30,
+  metamon\rl\pretrained.py:1328:            gxe=0.72,
+  metamon\rl\pretrained.py:1329:            proposer_bias=1.35,
+  metamon\rl\pretrained.py:1330:            judge_bias=0.15,
+  metamon\rl\pretrained.py:1331:            shortlist_k=2,
+  metamon\rl\pretrained.py:1332:            proposal_roles=("move", "counter_anchor"),
+  metamon\rl\pretrained.py:1333:        ),
+  metamon\rl\pretrained.py:1334:        EnsembleMemberSpec(
+  metamon\rl\pretrained.py:1335:            model_name="Alakazam",
+  metamon\rl\pretrained.py:1336:            checkpoint=8,
+  metamon\rl\pretrained.py:1337:            gxe=0.64,
+  metamon\rl\pretrained.py:1338:            proposer_bias=1.45,
+  metamon\rl\pretrained.py:1339:            judge_bias=0.05,
+  metamon\rl\pretrained.py:1340:            shortlist_k=2,
+  metamon\rl\pretrained.py:1341:            proposal_roles=("move", "counter_anchor"),
+  metamon\rl\pretrained.py:1342:        ),
+  metamon\rl\pretrained.py:1343:    ]
+  metamon\rl\pretrained.py:1344:    MEMBER_PRESETS = _load_ensemble_member_presets()
+  metamon\rl\pretrained.py:1345:
+
+
