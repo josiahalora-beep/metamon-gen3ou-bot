@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "iteration": 0,
+  "champion_id": "checkpoint_48",
+  "source_type": "base_checkpoint",
+  "base_checkpoint": 48,
+  "run_dir": null,
+  "run_name": null,
+  "checkpoint": null,
+  "checkpoint_path": null,
+  "overall_win_rate": 1.0,
+  "win_rate_vs_anchor": 1.0,
+  "win_rate_vs_champion": 1.0,
+  "evaluation_battles": 0
+}
